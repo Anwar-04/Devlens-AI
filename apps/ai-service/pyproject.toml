@@ -1,0 +1,17 @@
+[project]
+name = "devlens-ai-service"
+version = "0.1.0"
+description = "AI orchestration service for DevLens AI."
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi==0.115.6",
+  "uvicorn[standard]==0.34.0",
+  "pydantic==2.10.4",
+  "langchain==0.3.13",
+  "langgraph==0.2.60",
+  "qdrant-client==1.12.1"
+]
+
+[tool.ruff]
+line-length = 100
+

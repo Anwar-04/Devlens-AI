@@ -1,0 +1,162 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum WorkspaceRole {
+  OWNER
+  ADMIN
+  MEMBER
+  VIEWER
+}
+
+enum AnalysisStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+enum JobStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  name         String?
+  avatarUrl    String?
+  githubUserId String?  @unique
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  ownedWorkspaces Workspace[]       @relation("WorkspaceOwner")
+  memberships     WorkspaceMember[]
+}
+
+model Workspace {
+  id          String   @id @default(uuid())
+  name        String
+  slug        String   @unique
+  ownerUserId String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  owner        User              @relation("WorkspaceOwner", fields: [ownerUserId], references: [id])
+  members      WorkspaceMember[]
+  repositories Repository[]
+}
+
+model WorkspaceMember {
+  id          String        @id @default(uuid())
+  workspaceId String
+  userId      String
+  role        WorkspaceRole @default(MEMBER)
+  createdAt   DateTime      @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id])
+  user      User      @relation(fields: [userId], references: [id])
+
+  @@unique([workspaceId, userId])
+}
+
+model Repository {
+  id                 String         @id @default(uuid())
+  workspaceId        String
+  provider           String         @default("GITHUB")
+  owner              String
+  name               String
+  url                String
+  defaultBranch      String?
+  visibility         String         @default("PUBLIC")
+  cloneStatus        AnalysisStatus @default(PENDING)
+  analysisStatus     AnalysisStatus @default(PENDING)
+  detectedLanguages  String[]       @default([])
+  detectedFrameworks String[]       @default([])
+  fileCount          Int            @default(0)
+  totalSizeBytes     Int            @default(0)
+  lastAnalyzedCommit String?
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+
+  workspace Workspace        @relation(fields: [workspaceId], references: [id])
+  jobs      AnalysisJob[]
+  files     RepositoryFile[]
+  modules   Module[]
+
+  @@index([workspaceId])
+  @@index([owner, name])
+}
+
+model AnalysisJob {
+  id           String    @id @default(uuid())
+  repositoryId String
+  status       JobStatus @default(QUEUED)
+  currentStep  String    @default("queued")
+  progress     Int       @default(0)
+  errorMessage String?
+  startedAt    DateTime?
+  finishedAt   DateTime?
+  createdAt    DateTime  @default(now())
+
+  repository Repository @relation(fields: [repositoryId], references: [id])
+
+  @@index([repositoryId])
+  @@index([status])
+}
+
+model RepositoryFile {
+  id           String   @id @default(uuid())
+  repositoryId String
+  path         String
+  language     String?
+  sizeBytes    Int
+  hash         String
+  isGenerated  Boolean  @default(false)
+  isTest       Boolean  @default(false)
+  createdAt    DateTime @default(now())
+
+  repository Repository @relation(fields: [repositoryId], references: [id])
+  symbols    Symbol[]
+
+  @@unique([repositoryId, path])
+  @@index([repositoryId])
+  @@index([language])
+}
+
+model Module {
+  id           String  @id @default(uuid())
+  repositoryId String
+  name         String
+  path         String
+  layer        String?
+  summary      String?
+
+  repository Repository @relation(fields: [repositoryId], references: [id])
+  symbols    Symbol[]
+}
+
+model Symbol {
+  id           String  @id @default(uuid())
+  repositoryId String
+  fileId       String
+  moduleId     String?
+  name         String
+  kind         String
+  startLine    Int
+  endLine      Int
+  signature    String?
+  visibility   String?
+  summary      String?
+
+  file   RepositoryFile @relation(fields: [fileId], references: [id])
+  module Module?        @relation(fields: [moduleId], references: [id])
+}

@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "skipLibCheck": true,
+    "baseUrl": ".",
+    "paths": {
+      "@devlens/shared": ["packages/shared/src/index.ts"],
+      "@devlens/config": ["packages/config/src/index.ts"],
+      "@devlens/database": ["packages/database/src/index.ts"]
+    }
+  }
+}
+
