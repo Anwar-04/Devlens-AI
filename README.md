@@ -1,4 +1,4 @@
-# DevLens AI
+﻿# DevLens AI
 
 Understand any codebase in minutes, not days.
 
@@ -7,7 +7,8 @@ DevLens AI is an AI-powered codebase intelligence platform that analyzes GitHub 
 ## Milestone Status
 
 - Milestone 1: Product and architecture blueprint complete.
-- Milestone 2: Monorepo foundation in progress.
+- Milestone 2: Monorepo foundation complete.
+- Milestone 3: Repository ingestion MVP complete.
 
 ## Apps
 
@@ -19,7 +20,7 @@ DevLens AI is an AI-powered codebase intelligence platform that analyzes GitHub 
 
 ## Packages
 
-- `packages/shared`: shared TypeScript contracts.
+- `packages/shared`: shared TypeScript contracts and Redis queue helper.
 - `packages/config`: shared TypeScript environment helpers.
 - `packages/database`: Prisma schema and database package.
 
@@ -31,17 +32,19 @@ Install dependencies:
 npm install
 ```
 
-Start all Node workspaces:
-
-```bash
-npm run dev
-```
-
-Start infrastructure:
+Start infrastructure and app services with Docker:
 
 ```bash
 npm run docker:up
 ```
 
-The Python AI service has its own requirements file in `apps/ai-service`.
+Run checks:
 
+```bash
+npm run typecheck
+npm run build -w @devlens/web
+npm run build -w @devlens/api
+npm run build -w @devlens/repository-worker
+```
+
+The Python AI service has its own requirements file in `apps/ai-service`.
