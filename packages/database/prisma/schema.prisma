@@ -29,6 +29,12 @@ enum JobStatus {
   CANCELLED
 }
 
+enum KnowledgeChunkKind {
+  FILE
+  SYMBOL
+  MODULE
+}
+
 model User {
   id           String   @id @default(uuid())
   email        String   @unique
@@ -87,10 +93,12 @@ model Repository {
   createdAt          DateTime       @default(now())
   updatedAt          DateTime       @updatedAt
 
-  workspace Workspace        @relation(fields: [workspaceId], references: [id])
-  jobs      AnalysisJob[]
-  files     RepositoryFile[]
-  modules   Module[]
+  workspace       Workspace        @relation(fields: [workspaceId], references: [id])
+  jobs            AnalysisJob[]
+  files           RepositoryFile[]
+  modules         Module[]
+  symbols         Symbol[]
+  knowledgeChunks KnowledgeChunk[]
 
   @@index([workspaceId])
   @@index([owner, name])
@@ -124,8 +132,9 @@ model RepositoryFile {
   isTest       Boolean  @default(false)
   createdAt    DateTime @default(now())
 
-  repository Repository @relation(fields: [repositoryId], references: [id])
-  symbols    Symbol[]
+  repository      Repository       @relation(fields: [repositoryId], references: [id])
+  symbols         Symbol[]
+  knowledgeChunks KnowledgeChunk[]
 
   @@unique([repositoryId, path])
   @@index([repositoryId])
@@ -157,6 +166,41 @@ model Symbol {
   visibility   String?
   summary      String?
 
-  file   RepositoryFile @relation(fields: [fileId], references: [id])
-  module Module?        @relation(fields: [moduleId], references: [id])
+  repository      Repository       @relation(fields: [repositoryId], references: [id])
+  file            RepositoryFile   @relation(fields: [fileId], references: [id])
+  module          Module?          @relation(fields: [moduleId], references: [id])
+  knowledgeChunks KnowledgeChunk[]
+
+  @@index([repositoryId])
+  @@index([repositoryId, name])
+  @@index([fileId])
+}
+
+model KnowledgeChunk {
+  id           String             @id @default(uuid())
+  repositoryId String
+  fileId       String?
+  symbolId     String?
+  chunkKind    KnowledgeChunkKind @default(FILE)
+  title        String
+  path         String
+  language     String?
+  startLine    Int
+  endLine      Int
+  content      String
+  contentHash  String
+  tokenCount   Int                @default(0)
+  embedding    Float[]            @default([])
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+
+  repository Repository      @relation(fields: [repositoryId], references: [id])
+  file       RepositoryFile? @relation(fields: [fileId], references: [id])
+  symbol     Symbol?         @relation(fields: [symbolId], references: [id])
+
+  @@unique([repositoryId, path, startLine, endLine, contentHash])
+  @@index([repositoryId])
+  @@index([repositoryId, path])
+  @@index([symbolId])
+  @@index([language])
 }

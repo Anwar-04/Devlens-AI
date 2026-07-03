@@ -59,7 +59,7 @@ npm run docker:up
 Then run database migration:
 
 ```powershell
-$env:DATABASE_URL="postgresql://devlens:devlens@localhost:5432/devlens"
+$env:DATABASE_URL="postgresql://devlens:devlens@localhost:55432/devlens"
 npm run db:migrate -w @devlens/database
 ```
 

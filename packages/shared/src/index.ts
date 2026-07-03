@@ -58,5 +58,19 @@ export interface CloneJobPayload {
   url: string;
 }
 
-export { RedisQueue } from "./queue.js";
+export interface KnowledgeIndexJobPayload {
+  repositoryId: string;
+  jobId?: string;
+  source: "repository-ingestion" | "manual";
+}
 
+export { EMBEDDING_DIMENSIONS, generateEmbedding } from "./embeddings.js";
+export {
+  KNOWLEDGE_COLLECTION,
+  ensureKnowledgeCollection,
+  searchKnowledgePoints,
+  upsertKnowledgePoints,
+  type QdrantPoint,
+  type QdrantSearchHit,
+} from "./qdrant.js";
+export { RedisQueue } from "./queue.js";

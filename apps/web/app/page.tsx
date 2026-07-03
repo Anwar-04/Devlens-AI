@@ -22,7 +22,7 @@ import {
   Search,
   ShieldCheck,
   Sparkles,
-  XCircle
+  XCircle,
 } from "lucide-react";
 
 type JobStatus = "QUEUED" | "RUNNING" | "COMPLETED" | "FAILED" | "CANCELLED";
@@ -72,34 +72,103 @@ type ExplorerNode = TreeNode & {
   totalSizeBytes: number;
 };
 
+type SearchResult = {
+  id: string;
+  score: number;
+  lexicalScore?: number;
+  vectorScore?: number;
+  title: string;
+  path: string;
+  language?: string | null;
+  startLine: number;
+  endLine: number;
+  snippet: string;
+  matchedTerm?: string | null;
+  isTest: boolean;
+  chunkKind?: "FILE" | "SYMBOL" | "MODULE";
+  symbol?: {
+    id: string;
+    name: string;
+    kind: string;
+    signature?: string | null;
+    visibility?: string | null;
+  } | null;
+  file?: {
+    id: string;
+    path: string;
+    language?: string | null;
+    sizeBytes: number;
+    isTest: boolean;
+  } | null;
+};
+
+type SearchResponse = {
+  repository: {
+    id: string;
+    owner: string;
+    name: string;
+  };
+  query: string;
+  tokens: string[];
+  count: number;
+  results: SearchResult[];
+};
+
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
 
-const navItems = ["Overview", "Folder Explorer", "Dependency Graph", "API Explorer", "Docs"];
+const navItems = [
+  "Overview",
+  "Folder Explorer",
+  "Dependency Graph",
+  "API Explorer",
+  "Docs",
+];
 const pipelineSteps = [
   { key: "queued", label: "Queued", description: "Waiting for a worker" },
-  { key: "cloning", label: "Cloning", description: "Fetching repository from GitHub" },
-  { key: "indexing_files", label: "Indexing files", description: "Building the folder and file inventory" },
-  { key: "detecting_stack", label: "Detecting stack", description: "Finding languages and frameworks" },
-  { key: "saving_metadata", label: "Saving metadata", description: "Persisting repository knowledge" },
-  { key: "completed", label: "Completed", description: "Workspace is ready" }
+  {
+    key: "cloning",
+    label: "Cloning",
+    description: "Fetching repository from GitHub",
+  },
+  {
+    key: "indexing_files",
+    label: "Indexing files",
+    description: "Building the folder and file inventory",
+  },
+  {
+    key: "detecting_stack",
+    label: "Detecting stack",
+    description: "Finding languages and frameworks",
+  },
+  {
+    key: "saving_metadata",
+    label: "Saving metadata",
+    description: "Persisting repository knowledge",
+  },
+  { key: "completed", label: "Completed", description: "Workspace is ready" },
 ];
 
 const modules = [
   { name: "Repository Intelligence", status: "Ready", icon: GitBranch },
   { name: "Architecture Agent", status: "Queued", icon: Network },
   { name: "Documentation Agent", status: "Queued", icon: FileCode2 },
-  { name: "Knowledge Graph", status: "Indexing soon", icon: Braces }
+  { name: "Knowledge Graph", status: "Indexing soon", icon: Braces },
 ];
 
 function formatBytes(bytes: number): string {
   if (!bytes) return "0 B";
   const units = ["B", "KB", "MB", "GB"];
-  const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  const index = Math.min(
+    Math.floor(Math.log(bytes) / Math.log(1024)),
+    units.length - 1,
+  );
   return `${(bytes / 1024 ** index).toFixed(index === 0 ? 0 : 1)} ${units[index]}`;
 }
 
 function formatStepLabel(step: string): string {
-  return step.replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+  return step
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
 function statusTone(status?: JobStatus): string {
@@ -119,7 +188,9 @@ function calculateDuration(job: JobResponse | null): string {
   const end = job.finishedAt ? new Date(job.finishedAt).getTime() : Date.now();
   if (Number.isNaN(start) || Number.isNaN(end)) return "Tracking";
   const seconds = Math.max(0, Math.round((end - start) / 1000));
-  return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+  return seconds < 60
+    ? `${seconds}s`
+    : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 }
 
 function createFolderNode(path: string, name: string): ExplorerNode {
@@ -130,7 +201,7 @@ function createFolderNode(path: string, name: string): ExplorerNode {
     kind: "folder",
     children: [],
     fileCount: 0,
-    totalSizeBytes: 0
+    totalSizeBytes: 0,
   };
 }
 
@@ -160,7 +231,12 @@ function buildExplorerTree(nodes: TreeNode[]): ExplorerNode[] {
   for (const node of nodes) {
     if (node.kind !== "file") continue;
     const parts = node.path.split("/");
-    const fileNode: ExplorerNode = { ...node, children: [], fileCount: 1, totalSizeBytes: node.sizeBytes ?? 0 };
+    const fileNode: ExplorerNode = {
+      ...node,
+      children: [],
+      fileCount: 1,
+      totalSizeBytes: node.sizeBytes ?? 0,
+    };
 
     if (parts.length === 1) {
       root.set(node.path, fileNode);
@@ -177,8 +253,14 @@ function buildExplorerTree(nodes: TreeNode[]): ExplorerNode[] {
       if (a.kind !== b.kind) return a.kind === "folder" ? -1 : 1;
       return a.name.localeCompare(b.name);
     });
-    node.fileCount = node.children.reduce((count, child) => count + sortAndCount(child), 0);
-    node.totalSizeBytes = node.children.reduce((size, child) => size + child.totalSizeBytes, 0);
+    node.fileCount = node.children.reduce(
+      (count, child) => count + sortAndCount(child),
+      0,
+    );
+    node.totalSizeBytes = node.children.reduce(
+      (size, child) => size + child.totalSizeBytes,
+      0,
+    );
     return node.fileCount;
   }
 
@@ -203,11 +285,19 @@ function collectDefaultExpanded(nodes: ExplorerNode[], limit = 8): string[] {
   return expanded;
 }
 
-function filterTree(nodes: ExplorerNode[], query: string, language: string): ExplorerNode[] {
+function filterTree(
+  nodes: ExplorerNode[],
+  query: string,
+  language: string,
+): ExplorerNode[] {
   const normalizedQuery = query.trim().toLowerCase();
   const matches = (node: ExplorerNode) => {
-    const queryMatch = !normalizedQuery || node.path.toLowerCase().includes(normalizedQuery);
-    const languageMatch = language === "all" || node.kind === "folder" || node.language === language;
+    const queryMatch =
+      !normalizedQuery || node.path.toLowerCase().includes(normalizedQuery);
+    const languageMatch =
+      language === "all" ||
+      node.kind === "folder" ||
+      node.language === language;
     return queryMatch && languageMatch;
   };
 
@@ -215,15 +305,58 @@ function filterTree(nodes: ExplorerNode[], query: string, language: string): Exp
     if (node.kind === "file") return matches(node) ? [node] : [];
     const children = filterTree(node.children, query, language);
     if (children.length || matches(node)) {
-      return [{
-        ...node,
-        children,
-        fileCount: children.reduce((sum, child) => sum + child.fileCount, 0),
-        totalSizeBytes: children.reduce((sum, child) => sum + child.totalSizeBytes, 0)
-      }];
+      return [
+        {
+          ...node,
+          children,
+          fileCount: children.reduce((sum, child) => sum + child.fileCount, 0),
+          totalSizeBytes: children.reduce(
+            (sum, child) => sum + child.totalSizeBytes,
+            0,
+          ),
+        },
+      ];
     }
     return [];
   });
+}
+
+function findExplorerNode(
+  nodes: ExplorerNode[],
+  path: string,
+): ExplorerNode | null {
+  for (const node of nodes) {
+    if (node.path === path) return node;
+    const child = findExplorerNode(node.children, path);
+    if (child) return child;
+  }
+  return null;
+}
+
+function getParentPaths(path: string): string[] {
+  const parts = path.split("/");
+  return parts
+    .slice(0, -1)
+    .map((_, index) => parts.slice(0, index + 1).join("/"));
+}
+
+function highlightSnippet(snippet: string, matchedTerm?: string | null) {
+  if (!matchedTerm) return snippet;
+
+  const normalizedSnippet = snippet.toLowerCase();
+  const normalizedTerm = matchedTerm.toLowerCase();
+  const index = normalizedSnippet.indexOf(normalizedTerm);
+  if (index < 0) return snippet;
+
+  return (
+    <>
+      {snippet.slice(0, index)}
+      <mark className="rounded bg-amber/20 px-0.5 text-ink">
+        {snippet.slice(index, index + matchedTerm.length)}
+      </mark>
+      {snippet.slice(index + matchedTerm.length)}
+    </>
+  );
 }
 
 function ExplorerTree({
@@ -232,7 +365,7 @@ function ExplorerTree({
   selectedPath,
   onToggle,
   onSelect,
-  depth = 0
+  depth = 0,
 }: {
   nodes: ExplorerNode[];
   expanded: Set<string>;
@@ -264,12 +397,26 @@ function ExplorerTree({
             >
               <span className="flex min-w-0 items-center gap-2">
                 {isFolder ? (
-                  isExpanded ? <ChevronDown size={14} className="shrink-0 text-graphite" /> : <ChevronRight size={14} className="shrink-0 text-graphite" />
+                  isExpanded ? (
+                    <ChevronDown size={14} className="shrink-0 text-graphite" />
+                  ) : (
+                    <ChevronRight
+                      size={14}
+                      className="shrink-0 text-graphite"
+                    />
+                  )
                 ) : (
                   <span className="w-3.5 shrink-0" />
                 )}
-                <Icon size={16} className={isFolder ? "shrink-0 text-amber" : "shrink-0 text-signal"} />
-                <span className={`min-w-0 truncate ${isFolder ? "font-medium text-ink" : "text-ink"}`}>
+                <Icon
+                  size={16}
+                  className={
+                    isFolder ? "shrink-0 text-amber" : "shrink-0 text-signal"
+                  }
+                />
+                <span
+                  className={`min-w-0 truncate ${isFolder ? "font-medium text-ink" : "text-ink"}`}
+                >
                   {node.name}
                 </span>
               </span>
@@ -282,7 +429,11 @@ function ExplorerTree({
                   </>
                 ) : (
                   <>
-                    {node.language ? <span>{node.language}</span> : <span>file</span>}
+                    {node.language ? (
+                      <span>{node.language}</span>
+                    ) : (
+                      <span>file</span>
+                    )}
                     <span>•</span>
                     <span>{formatBytes(node.sizeBytes ?? 0)}</span>
                   </>
@@ -317,12 +468,22 @@ export default function Home() {
   const [selectedNode, setSelectedNode] = useState<ExplorerNode | null>(null);
   const [fileQuery, setFileQuery] = useState("");
   const [languageFilter, setLanguageFilter] = useState("all");
+  const [searchQuery, setSearchQuery] = useState("function");
+  const [searchResponse, setSearchResponse] = useState<SearchResponse | null>(
+    null,
+  );
+  const [isSearching, setIsSearching] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
 
   const repository = job?.repository;
-  const explorerTree = useMemo(() => buildExplorerTree(tree?.nodes ?? []), [tree]);
+  const repositoryReady = job?.status === "COMPLETED" && Boolean(repository);
+  const explorerTree = useMemo(
+    () => buildExplorerTree(tree?.nodes ?? []),
+    [tree],
+  );
   const visibleTree = useMemo(
     () => filterTree(explorerTree, fileQuery, languageFilter),
-    [explorerTree, fileQuery, languageFilter]
+    [explorerTree, fileQuery, languageFilter],
   );
   const languages = useMemo(() => {
     const values = new Set<string>();
@@ -340,7 +501,12 @@ export default function Home() {
   }, [explorerTree]);
 
   useEffect(() => {
-    if (!job || job.status === "COMPLETED" || job.status === "FAILED" || job.status === "CANCELLED") {
+    if (
+      !job ||
+      job.status === "COMPLETED" ||
+      job.status === "FAILED" ||
+      job.status === "CANCELLED"
+    ) {
       return;
     }
 
@@ -352,13 +518,17 @@ export default function Home() {
         setJob(nextJob);
 
         if (nextJob.status === "COMPLETED") {
-          const treeResponse = await fetch(`${API_URL}/repositories/${nextJob.repositoryId}/tree`);
+          const treeResponse = await fetch(
+            `${API_URL}/repositories/${nextJob.repositoryId}/tree`,
+          );
           if (treeResponse.ok) {
             setTree((await treeResponse.json()) as TreeResponse);
           }
         }
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Unable to refresh job status.");
+        setError(
+          err instanceof Error ? err.message : "Unable to refresh job status.",
+        );
       }
     }, 1200);
 
@@ -370,25 +540,33 @@ export default function Home() {
     setTree(null);
     setSelectedNode(null);
     setExpanded(new Set());
+    setSearchResponse(null);
+    setSearchError(null);
     setIsSubmitting(true);
 
     try {
       const response = await fetch(`${API_URL}/repositories`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: repoUrl })
+        body: JSON.stringify({ url: repoUrl }),
       });
 
       if (!response.ok) {
         const body = await response.json().catch(() => null);
-        throw new Error(body?.message ?? "Unable to create repository analysis job.");
+        throw new Error(
+          body?.message ?? "Unable to create repository analysis job.",
+        );
       }
 
       const created = await response.json();
-      const jobResponse = await fetch(`${API_URL}/jobs/${created.analysisJobId}`);
+      const jobResponse = await fetch(
+        `${API_URL}/jobs/${created.analysisJobId}`,
+      );
       setJob((await jobResponse.json()) as JobResponse);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to analyze repository.");
+      setError(
+        err instanceof Error ? err.message : "Unable to analyze repository.",
+      );
     } finally {
       setIsSubmitting(false);
     }
@@ -403,8 +581,50 @@ export default function Home() {
     });
   }
 
+  async function searchRepository(
+    event?: React.FormEvent<HTMLFormElement>,
+    nextQuery?: string,
+  ) {
+    event?.preventDefault();
+    const query = (nextQuery ?? searchQuery).trim();
+    if (!query || !job?.repositoryId || !repositoryReady) return;
+
+    setIsSearching(true);
+    setSearchError(null);
+
+    try {
+      const response = await fetch(
+        `${API_URL}/repositories/${job.repositoryId}/search?q=${encodeURIComponent(query)}&limit=8`,
+      );
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new Error(body?.message ?? "Unable to search repository.");
+      }
+      setSearchResponse((await response.json()) as SearchResponse);
+    } catch (err) {
+      setSearchError(
+        err instanceof Error ? err.message : "Unable to search repository.",
+      );
+    } finally {
+      setIsSearching(false);
+    }
+  }
+
+  function focusSearchResult(result: SearchResult) {
+    setFileQuery(result.path);
+    setLanguageFilter("all");
+    setExpanded((current) => {
+      const next = new Set(current);
+      getParentPaths(result.path).forEach((path) => next.add(path));
+      return next;
+    });
+    const node = findExplorerNode(explorerTree, result.path);
+    if (node) setSelectedNode(node);
+  }
+
   const activeStepIndex = getStepIndex(job?.currentStep);
-  const isRunning = job?.status === "QUEUED" || job?.status === "RUNNING" || isSubmitting;
+  const isRunning =
+    job?.status === "QUEUED" || job?.status === "RUNNING" || isSubmitting;
 
   return (
     <main className="min-h-screen bg-cloud text-ink">
@@ -415,7 +635,9 @@ export default function Home() {
           </div>
           <div>
             <p className="text-sm font-semibold leading-4">DevLens AI</p>
-            <p className="text-xs text-graphite">Understand any codebase in minutes, not days.</p>
+            <p className="text-xs text-graphite">
+              Understand any codebase in minutes, not days.
+            </p>
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -434,7 +656,10 @@ export default function Home() {
         <aside className="border-r border-line bg-white p-4">
           <div className="mb-4 flex items-center gap-2 rounded-md border border-line bg-cloud px-3 py-2">
             <Search size={16} className="text-graphite" />
-            <input className="w-full bg-transparent text-sm outline-none" placeholder="Search repositories" />
+            <input
+              className="w-full bg-transparent text-sm outline-none"
+              placeholder="Search repositories"
+            />
           </div>
 
           <nav className="space-y-1">
@@ -450,12 +675,20 @@ export default function Home() {
           </nav>
 
           <div className="mt-8">
-            <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-graphite">Analysis Pipeline</p>
+            <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-graphite">
+              Analysis Pipeline
+            </p>
             <div className="space-y-3">
               {pipelineSteps.map((step, index) => {
-                const failed = job?.status === "FAILED" && index === Math.max(activeStepIndex, 0);
-                const complete = job?.status === "COMPLETED" || (activeStepIndex >= 0 && index < activeStepIndex);
-                const active = index === activeStepIndex && (job?.status === "RUNNING" || job?.status === "QUEUED");
+                const failed =
+                  job?.status === "FAILED" &&
+                  index === Math.max(activeStepIndex, 0);
+                const complete =
+                  job?.status === "COMPLETED" ||
+                  (activeStepIndex >= 0 && index < activeStepIndex);
+                const active =
+                  index === activeStepIndex &&
+                  (job?.status === "RUNNING" || job?.status === "QUEUED");
                 return (
                   <div key={step.key} className="flex gap-3 text-sm">
                     <span
@@ -469,11 +702,27 @@ export default function Home() {
                               : "bg-line text-graphite"
                       }`}
                     >
-                      {failed ? <XCircle size={15} /> : complete ? <CheckCircle2 size={15} /> : active ? <Loader2 size={14} className="animate-spin" /> : index + 1}
+                      {failed ? (
+                        <XCircle size={15} />
+                      ) : complete ? (
+                        <CheckCircle2 size={15} />
+                      ) : active ? (
+                        <Loader2 size={14} className="animate-spin" />
+                      ) : (
+                        index + 1
+                      )}
                     </span>
                     <div className="min-w-0">
-                      <p className={active ? "font-medium text-ink" : "text-graphite"}>{step.label}</p>
-                      <p className="truncate text-xs text-graphite">{step.description}</p>
+                      <p
+                        className={
+                          active ? "font-medium text-ink" : "text-graphite"
+                        }
+                      >
+                        {step.label}
+                      </p>
+                      <p className="truncate text-xs text-graphite">
+                        {step.description}
+                      </p>
                     </div>
                   </div>
                 );
@@ -484,9 +733,12 @@ export default function Home() {
 
         <section className="p-6">
           <div className="mb-6">
-            <h1 className="text-2xl font-semibold tracking-normal">Repository Workspace</h1>
+            <h1 className="text-2xl font-semibold tracking-normal">
+              Repository Workspace
+            </h1>
             <p className="mt-1 max-w-2xl text-sm leading-6 text-graphite">
-              Paste a GitHub repository, analyze its structure, and turn the result into a navigable engineering knowledge model.
+              Paste a GitHub repository, analyze its structure, and turn the
+              result into a navigable engineering knowledge model.
             </p>
           </div>
 
@@ -503,7 +755,11 @@ export default function Home() {
                 disabled={isRunning}
                 className="inline-flex h-11 items-center gap-2 rounded-md bg-signal px-4 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
               >
-                {isRunning ? <Loader2 size={17} className="animate-spin" /> : <GitPullRequest size={17} />}
+                {isRunning ? (
+                  <Loader2 size={17} className="animate-spin" />
+                ) : (
+                  <GitPullRequest size={17} />
+                )}
                 Analyze repo
               </button>
             </div>
@@ -517,16 +773,23 @@ export default function Home() {
               <div className="mt-3 rounded-md border border-line bg-cloud p-3 text-sm">
                 <div className="mb-2 flex items-center justify-between">
                   <span className={statusTone(job.status)}>{job.status}</span>
-                  <span className="text-graphite">{formatStepLabel(job.currentStep)}</span>
+                  <span className="text-graphite">
+                    {formatStepLabel(job.currentStep)}
+                  </span>
                   <span className="font-medium">{job.progress}%</span>
                 </div>
                 <div className="h-2 overflow-hidden rounded-full bg-line">
-                  <div className="h-full rounded-full bg-signal transition-all" style={{ width: `${job.progress}%` }} />
+                  <div
+                    className="h-full rounded-full bg-signal transition-all"
+                    style={{ width: `${job.progress}%` }}
+                  />
                 </div>
                 <div className="mt-2 flex items-center gap-2 text-xs text-graphite">
                   <Clock3 size={13} />
                   Elapsed: {calculateDuration(job)}
-                  {job.errorMessage ? <span className="text-red-600">- {job.errorMessage}</span> : null}
+                  {job.errorMessage ? (
+                    <span className="text-red-600">- {job.errorMessage}</span>
+                  ) : null}
                 </div>
               </div>
             ) : null}
@@ -534,14 +797,42 @@ export default function Home() {
 
           <div className="mb-6 grid grid-cols-4 gap-4">
             {[
-              ["Repository", repository ? `${repository.owner}/${repository.name}` : "Not analyzed"],
-              ["Languages", repository?.detectedLanguages.length ? repository.detectedLanguages.join(", ") : "Pending"],
-              ["Frameworks", repository?.detectedFrameworks.length ? repository.detectedFrameworks.join(", ") : "Pending"],
-              ["Files", repository ? `${repository.fileCount} files` : "Pending"]
+              [
+                "Repository",
+                repository
+                  ? `${repository.owner}/${repository.name}`
+                  : "Not analyzed",
+              ],
+              [
+                "Languages",
+                repository?.detectedLanguages.length
+                  ? repository.detectedLanguages.join(", ")
+                  : "Pending",
+              ],
+              [
+                "Frameworks",
+                repository?.detectedFrameworks.length
+                  ? repository.detectedFrameworks.join(", ")
+                  : "Pending",
+              ],
+              [
+                "Files",
+                repository ? `${repository.fileCount} files` : "Pending",
+              ],
             ].map(([label, value]) => (
-              <div key={label} className="rounded-md border border-line bg-white p-4">
-                <p className="text-xs font-medium uppercase tracking-wide text-graphite">{label}</p>
-                <p className="mt-2 truncate text-lg font-semibold" title={value}>{value}</p>
+              <div
+                key={label}
+                className="rounded-md border border-line bg-white p-4"
+              >
+                <p className="text-xs font-medium uppercase tracking-wide text-graphite">
+                  {label}
+                </p>
+                <p
+                  className="mt-2 truncate text-lg font-semibold"
+                  title={value}
+                >
+                  {value}
+                </p>
               </div>
             ))}
           </div>
@@ -553,7 +844,9 @@ export default function Home() {
                   <div>
                     <p className="font-semibold">Repository file explorer</p>
                     <p className="text-sm text-graphite">
-                      {tree ? `${tree.fileCount} files extracted` : "Run an analysis to populate files."}
+                      {tree
+                        ? `${tree.fileCount} files extracted`
+                        : "Run an analysis to populate files."}
                     </p>
                   </div>
                   <Activity size={18} className="text-mint" />
@@ -575,7 +868,9 @@ export default function Home() {
                   >
                     <option value="all">All languages</option>
                     {languages.map((language) => (
-                      <option key={language} value={language}>{language}</option>
+                      <option key={language} value={language}>
+                        {language}
+                      </option>
                     ))}
                   </select>
                 </div>
@@ -594,7 +889,8 @@ export default function Home() {
                     <div className="grid h-full place-items-center text-center text-sm text-graphite">
                       <div>
                         <Database className="mx-auto mb-3 text-amber" />
-                        Repository metadata will appear here after the worker finishes.
+                        Repository metadata will appear here after the worker
+                        finishes.
                       </div>
                     </div>
                   )}
@@ -604,17 +900,33 @@ export default function Home() {
                   {selectedNode ? (
                     <div className="mt-3 space-y-4 text-graphite">
                       <div className="rounded-md border border-line bg-white p-3">
-                        <p className="text-xs uppercase tracking-wide text-graphite">Selected {selectedNode.kind}</p>
-                        <p className="mt-1 break-all font-medium text-ink">{selectedNode.path}</p>
+                        <p className="text-xs uppercase tracking-wide text-graphite">
+                          Selected {selectedNode.kind}
+                        </p>
+                        <p className="mt-1 break-all font-medium text-ink">
+                          {selectedNode.path}
+                        </p>
                       </div>
                       <div className="grid grid-cols-2 gap-2">
                         <div className="rounded-md border border-line bg-white p-3">
-                          <p className="text-xs uppercase tracking-wide">Files</p>
-                          <p className="mt-1 font-semibold text-ink">{selectedNode.fileCount}</p>
+                          <p className="text-xs uppercase tracking-wide">
+                            Files
+                          </p>
+                          <p className="mt-1 font-semibold text-ink">
+                            {selectedNode.fileCount}
+                          </p>
                         </div>
                         <div className="rounded-md border border-line bg-white p-3">
-                          <p className="text-xs uppercase tracking-wide">Size</p>
-                          <p className="mt-1 font-semibold text-ink">{formatBytes(selectedNode.totalSizeBytes || selectedNode.sizeBytes || 0)}</p>
+                          <p className="text-xs uppercase tracking-wide">
+                            Size
+                          </p>
+                          <p className="mt-1 font-semibold text-ink">
+                            {formatBytes(
+                              selectedNode.totalSizeBytes ||
+                                selectedNode.sizeBytes ||
+                                0,
+                            )}
+                          </p>
                         </div>
                       </div>
                       <div className="rounded-md border border-line bg-white p-3">
@@ -628,13 +940,22 @@ export default function Home() {
                         </p>
                       </div>
                       {selectedNode.kind === "folder" ? (
-                        <p className="leading-6">Expand folders to trace how the repository is organized before moving into symbols and dependencies.</p>
+                        <p className="leading-6">
+                          Expand folders to trace how the repository is
+                          organized before moving into symbols and dependencies.
+                        </p>
                       ) : (
-                        <p className="leading-6">Code preview and symbol extraction will attach here in the next milestone.</p>
+                        <p className="leading-6">
+                          Code preview and symbol extraction will attach here in
+                          the next milestone.
+                        </p>
                       )}
                     </div>
                   ) : (
-                    <p className="mt-3 leading-6 text-graphite">Select a folder or file to understand what role it plays in the repository structure.</p>
+                    <p className="mt-3 leading-6 text-graphite">
+                      Select a folder or file to understand what role it plays
+                      in the repository structure.
+                    </p>
                   )}
                 </div>
               </div>
@@ -644,10 +965,15 @@ export default function Home() {
               {modules.map((module) => {
                 const Icon = module.icon;
                 return (
-                  <div key={module.name} className="rounded-md border border-line bg-white p-4">
+                  <div
+                    key={module.name}
+                    className="rounded-md border border-line bg-white p-4"
+                  >
                     <Icon size={20} className="text-signal" />
                     <p className="mt-3 font-medium">{module.name}</p>
-                    <p className="mt-1 text-sm text-graphite">{module.status}</p>
+                    <p className="mt-1 text-sm text-graphite">
+                      {module.status}
+                    </p>
                   </div>
                 );
               })}
@@ -655,14 +981,152 @@ export default function Home() {
           </div>
         </section>
 
-        <aside className="border-l border-line bg-white p-4">
-          <p className="font-semibold">Ask Repository</p>
-          <p className="mt-1 text-sm leading-6 text-graphite">
-            The AI panel will route questions to specialized agents with source citations.
-          </p>
-          <div className="mt-4 rounded-md border border-line bg-cloud p-3 text-sm text-graphite">Where is authentication handled?</div>
-          <div className="mt-3 rounded-md border border-line bg-cloud p-3 text-sm text-graphite">Show the request flow for checkout.</div>
-          <div className="mt-3 rounded-md border border-line bg-cloud p-3 text-sm text-graphite">Generate onboarding docs for a new engineer.</div>
+        <aside className="flex min-h-0 flex-col border-l border-line bg-white p-4">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="font-semibold">Repository Search</p>
+              <p className="mt-1 text-sm leading-6 text-graphite">
+                Search indexed code chunks with file and line citations.
+              </p>
+            </div>
+            <Search size={18} className="shrink-0 text-signal" />
+          </div>
+
+          <form onSubmit={searchRepository} className="mt-4">
+            <div className="flex items-center gap-2 rounded-md border border-line bg-cloud px-3 py-2 focus-within:border-signal">
+              <Search size={15} className="shrink-0 text-graphite" />
+              <input
+                value={searchQuery}
+                onChange={(event) => setSearchQuery(event.target.value)}
+                disabled={!repositoryReady}
+                className="min-w-0 flex-1 bg-transparent text-sm outline-none disabled:cursor-not-allowed"
+                placeholder={
+                  repositoryReady
+                    ? "Search symbols, paths, code"
+                    : "Analyze a repository first"
+                }
+              />
+            </div>
+            <button
+              type="submit"
+              disabled={!repositoryReady || isSearching || !searchQuery.trim()}
+              className="mt-3 inline-flex h-10 w-full items-center justify-center gap-2 rounded-md bg-ink px-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {isSearching ? (
+                <Loader2 size={16} className="animate-spin" />
+              ) : (
+                <Search size={16} />
+              )}
+              Search repository
+            </button>
+          </form>
+
+          {searchError ? (
+            <div className="mt-3 flex items-start gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+              <AlertCircle size={16} className="mt-0.5 shrink-0" />
+              <span>{searchError}</span>
+            </div>
+          ) : null}
+
+          <div className="mt-4 min-h-0 flex-1 overflow-auto">
+            {!repositoryReady ? (
+              <div className="rounded-md border border-line bg-cloud p-3 text-sm leading-6 text-graphite">
+                Search becomes available after repository analysis completes.
+              </div>
+            ) : searchResponse ? (
+              <div>
+                <div className="mb-3 flex items-center justify-between text-sm">
+                  <span className="font-medium">
+                    {searchResponse.count} results
+                  </span>
+                  <span
+                    className="max-w-[180px] truncate text-graphite"
+                    title={searchResponse.query}
+                  >
+                    {searchResponse.query}
+                  </span>
+                </div>
+                <div className="space-y-3">
+                  {searchResponse.results.length ? (
+                    searchResponse.results.map((result) => (
+                      <button
+                        key={result.id}
+                        onClick={() => focusSearchResult(result)}
+                        className="w-full rounded-md border border-line bg-white p-3 text-left hover:border-signal hover:bg-cloud"
+                      >
+                        <div className="flex min-w-0 items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <p
+                              className="truncate text-sm font-semibold text-ink"
+                              title={result.path}
+                            >
+                              {result.path}
+                            </p>
+                            <p className="mt-1 text-xs text-graphite">
+                              Lines {result.startLine}-{result.endLine}
+                              {result.language ? ` • ${result.language}` : ""}
+                            </p>
+                            {result.symbol ? (
+                              <p className="mt-1 truncate text-xs font-medium text-signal">
+                                {result.symbol.kind} {result.symbol.name}
+                              </p>
+                            ) : null}
+                          </div>
+                          <div className="flex shrink-0 flex-col items-end gap-1">
+                            <span className="rounded-md bg-cloud px-2 py-1 text-xs font-medium text-graphite">
+                              {result.score}
+                            </span>
+                            <span
+                              className={`rounded-md px-2 py-1 text-xs font-medium ${
+                                result.chunkKind === "SYMBOL"
+                                  ? "bg-signal/10 text-signal"
+                                  : result.isTest
+                                    ? "bg-amber/10 text-amber"
+                                    : "bg-mint/10 text-mint"
+                              }`}
+                            >
+                              {result.chunkKind === "SYMBOL"
+                                ? "symbol"
+                                : result.isTest
+                                  ? "test"
+                                  : "source"}
+                            </span>
+                            {result.vectorScore ? (
+                              <span className="rounded-md bg-cloud px-2 py-1 text-xs font-medium text-graphite">
+                                vector
+                              </span>
+                            ) : null}
+                          </div>
+                        </div>
+                        <p className="mt-3 line-clamp-5 whitespace-pre-wrap break-words text-xs leading-5 text-graphite">
+                          {highlightSnippet(result.snippet, result.matchedTerm)}
+                        </p>
+                      </button>
+                    ))
+                  ) : (
+                    <div className="rounded-md border border-line bg-cloud p-3 text-sm leading-6 text-graphite">
+                      No chunks matched this query.
+                    </div>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {["function", "parse", "format"].map((query) => (
+                  <button
+                    key={query}
+                    onClick={() => {
+                      setSearchQuery(query);
+                      void searchRepository(undefined, query);
+                    }}
+                    className="w-full rounded-md border border-line bg-cloud p-3 text-left text-sm text-graphite hover:border-signal"
+                  >
+                    {query}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         </aside>
       </section>
     </main>
