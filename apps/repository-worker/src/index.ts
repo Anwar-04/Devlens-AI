@@ -1,6 +1,7 @@
 ﻿import * as crypto from "crypto";
 import * as fs from "fs";
 import * as path from "path";
+import * as ts from "typescript";
 import { execFileSync } from "child_process";
 import { fileURLToPath } from "url";
 import { db } from "@devlens/database";
@@ -84,6 +85,8 @@ export interface FileEntry {
 interface KnowledgeChunkEntry {
   filePath: string;
   symbolKey?: string;
+  references?: string[];
+  calls?: string[];
   chunkKind: "FILE" | "SYMBOL";
   title: string;
   language: string | null;
@@ -105,6 +108,15 @@ interface SymbolEntry {
   signature: string;
   visibility: string | null;
   content: string;
+  references: string[];
+  calls: string[];
+  node: ts.Node;
+}
+
+interface SymbolReferenceEntry {
+  sourceSymbolKey: string;
+  targetSymbolKey: string;
+  kind: "REFERENCE" | "CALL";
 }
 
 export function getLanguage(filePath: string): string | null {
@@ -225,106 +237,232 @@ function isTypeScriptOrJavaScript(file: FileEntry): boolean {
   return file.language === "TypeScript" || file.language === "JavaScript";
 }
 
-function findBlockEndLine(lines: string[], startIndex: number): number {
-  let braceBalance = 0;
-  let sawBrace = false;
-
-  for (let index = startIndex; index < lines.length; index += 1) {
-    const line = lines[index] ?? "";
-    for (const char of line) {
-      if (char === "{") {
-        braceBalance += 1;
-        sawBrace = true;
-      } else if (char === "}") {
-        braceBalance -= 1;
-      }
-    }
-
-    if (sawBrace && braceBalance <= 0) return index + 1;
-    if (!sawBrace && /;\s*$/.test(line)) return index + 1;
+function getScriptKind(filePath: string): ts.ScriptKind {
+  switch (path.extname(filePath).toLowerCase()) {
+    case ".tsx":
+      return ts.ScriptKind.TSX;
+    case ".jsx":
+      return ts.ScriptKind.JSX;
+    case ".js":
+    case ".mjs":
+    case ".cjs":
+      return ts.ScriptKind.JS;
+    default:
+      return ts.ScriptKind.TS;
   }
-
-  return Math.min(lines.length, startIndex + 1);
 }
 
-function extractSymbolFromLine(line: string): {
-  name: string;
-  kind: string;
-  visibility: string | null;
-  signature: string;
-} | null {
-  const trimmed = line.trim();
-  const exportPrefix = "(?:export\\s+)?(?:default\\s+)?";
-  const visibility = /\bexport\b/.test(trimmed) ? "exported" : null;
-
-  const functionMatch = trimmed.match(
-    new RegExp(
-      `^${exportPrefix}(?:async\\s+)?function\\s+([A-Za-z_$][\\w$]*)\\b`,
-    ),
+function hasModifier(node: ts.Node, kind: ts.SyntaxKind): boolean {
+  return Boolean(
+    ts.canHaveModifiers(node) &&
+      ts.getModifiers(node)?.some((modifier) => modifier.kind === kind),
   );
-  if (functionMatch?.[1]) {
-    return {
-      name: functionMatch[1],
-      kind: "function",
-      visibility,
-      signature: trimmed,
-    };
-  }
+}
 
-  const classMatch = trimmed.match(
-    new RegExp(`^${exportPrefix}class\\s+([A-Za-z_$][\\w$]*)\\b`),
-  );
-  if (classMatch?.[1]) {
-    return {
-      name: classMatch[1],
-      kind: "class",
-      visibility,
-      signature: trimmed,
-    };
-  }
-
-  const interfaceMatch = trimmed.match(
-    new RegExp(`^${exportPrefix}interface\\s+([A-Za-z_$][\\w$]*)\\b`),
-  );
-  if (interfaceMatch?.[1]) {
-    return {
-      name: interfaceMatch[1],
-      kind: "interface",
-      visibility,
-      signature: trimmed,
-    };
-  }
-
-  const typeMatch = trimmed.match(
-    new RegExp(`^${exportPrefix}type\\s+([A-Za-z_$][\\w$]*)\\b`),
-  );
-  if (typeMatch?.[1]) {
-    return {
-      name: typeMatch[1],
-      kind: "type",
-      visibility,
-      signature: trimmed,
-    };
-  }
-
-  const arrowFunctionMatch = trimmed.match(
-    new RegExp(
-      `^${exportPrefix}const\\s+([A-Za-z_$][\\w$]*)\\s*=\\s*(?:async\\s*)?(?:\\([^)]*\\)|[A-Za-z_$][\\w$]*)\\s*=>`,
-    ),
-  );
-  if (arrowFunctionMatch?.[1]) {
-    return {
-      name: arrowFunctionMatch[1],
-      kind: "function",
-      visibility,
-      signature: trimmed,
-    };
-  }
-
+function getVisibility(node: ts.Node): string | null {
+  if (hasModifier(node, ts.SyntaxKind.ExportKeyword)) return "exported";
+  if (hasModifier(node, ts.SyntaxKind.DefaultKeyword)) return "default";
   return null;
 }
 
-function extractSymbols(repoPath: string, files: FileEntry[]): SymbolEntry[] {
+function getLineRange(sourceFile: ts.SourceFile, node: ts.Node) {
+  const start = sourceFile.getLineAndCharacterOfPosition(
+    node.getStart(sourceFile),
+  );
+  const end = sourceFile.getLineAndCharacterOfPosition(node.getEnd());
+  return {
+    startLine: start.line + 1,
+    endLine: end.line + 1,
+  };
+}
+
+function getSignature(sourceFile: ts.SourceFile, node: ts.Node): string {
+  const text = node.getText(sourceFile);
+  const firstLine = text.split("\n")[0]?.trim() ?? "";
+  return firstLine.length > 240 ? `${firstLine.slice(0, 237)}...` : firstLine;
+}
+
+function getVariableSymbolKind(declaration: ts.VariableDeclaration): string {
+  const initializer = declaration.initializer;
+  if (!initializer) return "variable";
+  if (
+    ts.isArrowFunction(initializer) ||
+    ts.isFunctionExpression(initializer)
+  ) {
+    return "function";
+  }
+  if (ts.isClassExpression(initializer)) return "class";
+  return "variable";
+}
+
+function findAncestor<T extends ts.Node>(
+  node: ts.Node,
+  predicate: (candidate: ts.Node) => candidate is T,
+): T | undefined {
+  let current = node.parent;
+  while (current) {
+    if (predicate(current)) return current;
+    current = current.parent;
+  }
+  return undefined;
+}
+
+function extractDeclarationSymbols(
+  sourceFile: ts.SourceFile,
+  filePath: string,
+): SymbolEntry[] {
+  const symbols: SymbolEntry[] = [];
+
+  const addSymbol = (
+    node: ts.Node,
+    nameNode: ts.Identifier | ts.PrivateIdentifier | undefined,
+    kind: string,
+    namePrefix = "",
+  ) => {
+    if (!nameNode) return;
+    const name = `${namePrefix}${nameNode.text}`;
+    const { startLine, endLine } = getLineRange(sourceFile, node);
+    const content = node.getText(sourceFile).trim();
+    if (!content) return;
+
+    symbols.push({
+      filePath,
+      key: `${filePath}:${name}:${startLine}`,
+      name,
+      kind,
+      startLine,
+      endLine,
+      signature: getSignature(sourceFile, node),
+      visibility: getVisibility(node),
+      content,
+      references: [],
+      calls: [],
+      node,
+    });
+  };
+
+  const visit = (node: ts.Node) => {
+    if (ts.isFunctionDeclaration(node)) {
+      addSymbol(node, node.name, "function");
+    } else if (ts.isClassDeclaration(node)) {
+      addSymbol(node, node.name, "class");
+    } else if (ts.isInterfaceDeclaration(node)) {
+      addSymbol(node, node.name, "interface");
+    } else if (ts.isTypeAliasDeclaration(node)) {
+      addSymbol(node, node.name, "type");
+    } else if (ts.isEnumDeclaration(node)) {
+      addSymbol(node, node.name, "enum");
+    } else if (ts.isVariableStatement(node)) {
+      for (const declaration of node.declarationList.declarations) {
+        if (ts.isIdentifier(declaration.name)) {
+          addSymbol(node, declaration.name, getVariableSymbolKind(declaration));
+        }
+      }
+    } else if (
+      ts.isMethodDeclaration(node) ||
+      ts.isGetAccessorDeclaration(node) ||
+      ts.isSetAccessorDeclaration(node)
+    ) {
+      const classNode = findAncestor(node, ts.isClassDeclaration);
+      if (classNode?.name && ts.isIdentifier(node.name)) {
+        addSymbol(node, node.name, "method", `${classNode.name.text}.`);
+      }
+    }
+
+    ts.forEachChild(node, visit);
+  };
+
+  visit(sourceFile);
+  return symbols.sort(
+    (left, right) =>
+      left.startLine - right.startLine || left.name.localeCompare(right.name),
+  );
+}
+
+function getCalledName(expression: ts.Expression): string | null {
+  if (ts.isIdentifier(expression)) return expression.text;
+  if (ts.isPropertyAccessExpression(expression)) return expression.name.text;
+  return null;
+}
+
+function isDeclarationName(identifier: ts.Identifier): boolean {
+  const parent = identifier.parent;
+  if (!parent) return false;
+  return (
+    (ts.isFunctionDeclaration(parent) && parent.name === identifier) ||
+    (ts.isClassDeclaration(parent) && parent.name === identifier) ||
+    (ts.isInterfaceDeclaration(parent) && parent.name === identifier) ||
+    (ts.isTypeAliasDeclaration(parent) && parent.name === identifier) ||
+    (ts.isEnumDeclaration(parent) && parent.name === identifier) ||
+    (ts.isVariableDeclaration(parent) && parent.name === identifier) ||
+    (ts.isMethodDeclaration(parent) && parent.name === identifier) ||
+    (ts.isGetAccessorDeclaration(parent) && parent.name === identifier) ||
+    (ts.isSetAccessorDeclaration(parent) && parent.name === identifier) ||
+    (ts.isPropertyAccessExpression(parent) && parent.name === identifier)
+  );
+}
+
+function attachSymbolReferences(symbols: SymbolEntry[]): void {
+  const symbolNames = new Set(symbols.map((symbol) => symbol.name));
+  const shortNames = new Map<string, Set<string>>();
+
+  for (const symbol of symbols) {
+    const shortName = symbol.name.split(".").at(-1) ?? symbol.name;
+    if (!shortNames.has(shortName)) shortNames.set(shortName, new Set());
+    shortNames.get(shortName)?.add(symbol.name);
+  }
+
+  for (const symbol of symbols) {
+    const references = new Set<string>();
+    const calls = new Set<string>();
+    const ownShortName = symbol.name.split(".").at(-1) ?? symbol.name;
+
+    const resolveReferenceTargets = (name: string): string[] => {
+      const targets = new Set<string>();
+      for (const target of shortNames.get(name) ?? []) {
+        if (target !== symbol.name && name !== ownShortName) {
+          targets.add(target);
+        }
+      }
+      if (symbolNames.has(name) && name !== symbol.name) {
+        targets.add(name);
+      }
+      return [...targets];
+    };
+
+    const addReference = (name: string): string[] => {
+      const targets = resolveReferenceTargets(name);
+      for (const target of targets) references.add(target);
+      return targets;
+    };
+
+    const visit = (node: ts.Node) => {
+      if (ts.isIdentifier(node) && !isDeclarationName(node)) {
+        addReference(node.text);
+      }
+
+      if (ts.isCallExpression(node)) {
+        const calledName = getCalledName(node.expression);
+        if (calledName) {
+          for (const target of addReference(calledName)) {
+            calls.add(target);
+          }
+        }
+      }
+
+      ts.forEachChild(node, visit);
+    };
+
+    visit(symbol.node);
+    symbol.references = [...references].sort();
+    symbol.calls = [...calls].sort();
+  }
+}
+
+export function extractSymbols(
+  repoPath: string,
+  files: FileEntry[],
+): SymbolEntry[] {
   const symbols: SymbolEntry[] = [];
 
   for (const file of files) {
@@ -334,32 +472,77 @@ function extractSymbols(repoPath: string, files: FileEntry[]): SymbolEntry[] {
     if (!fs.existsSync(fullPath)) continue;
 
     const content = fs.readFileSync(fullPath, "utf-8").replace(/\r\n/g, "\n");
-    const lines = content.split("\n");
-
-    for (let index = 0; index < lines.length; index += 1) {
-      const extracted = extractSymbolFromLine(lines[index] ?? "");
-      if (!extracted) continue;
-
-      const startLine = index + 1;
-      const endLine = findBlockEndLine(lines, index);
-      const symbolContent = lines.slice(index, endLine).join("\n").trim();
-      if (!symbolContent) continue;
-
-      symbols.push({
-        filePath: file.path,
-        key: `${file.path}:${extracted.name}:${startLine}`,
-        name: extracted.name,
-        kind: extracted.kind,
-        startLine,
-        endLine,
-        signature: extracted.signature,
-        visibility: extracted.visibility,
-        content: symbolContent,
-      });
-    }
+    const sourceFile = ts.createSourceFile(
+      file.path,
+      content,
+      ts.ScriptTarget.Latest,
+      true,
+      getScriptKind(file.path),
+    );
+    symbols.push(...extractDeclarationSymbols(sourceFile, file.path));
   }
 
+  attachSymbolReferences(symbols);
   return symbols;
+}
+
+function buildIntelligenceSummary(symbol: SymbolEntry): string {
+  const lines = [];
+  if (symbol.references.length > 0) {
+    lines.push(`References: ${symbol.references.join(", ")}`);
+  }
+  if (symbol.calls.length > 0) {
+    lines.push(`Calls: ${symbol.calls.join(", ")}`);
+  }
+  return lines.length > 0 ? `\n\nCode intelligence:\n${lines.join("\n")}` : "";
+}
+
+function extractIntelligenceList(content: string, label: string): string[] {
+  const line = content
+    .split("\n")
+    .find((entry) => entry.startsWith(`${label}: `));
+  if (!line) return [];
+  return line
+    .slice(label.length + 2)
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
+function buildSymbolReferences(symbols: SymbolEntry[]): SymbolReferenceEntry[] {
+  const symbolsByName = new Map<string, SymbolEntry[]>();
+  const references = new Map<string, SymbolReferenceEntry>();
+
+  for (const symbol of symbols) {
+    const existing = symbolsByName.get(symbol.name) ?? [];
+    existing.push(symbol);
+    symbolsByName.set(symbol.name, existing);
+  }
+
+  const addReferences = (
+    source: SymbolEntry,
+    targetNames: string[],
+    kind: SymbolReferenceEntry["kind"],
+  ) => {
+    for (const targetName of targetNames) {
+      for (const target of symbolsByName.get(targetName) ?? []) {
+        if (target.key === source.key) continue;
+        const key = `${source.key}->${target.key}:${kind}`;
+        references.set(key, {
+          sourceSymbolKey: source.key,
+          targetSymbolKey: target.key,
+          kind,
+        });
+      }
+    }
+  };
+
+  for (const symbol of symbols) {
+    addReferences(symbol, symbol.references, "REFERENCE");
+    addReferences(symbol, symbol.calls, "CALL");
+  }
+
+  return [...references.values()];
 }
 
 function buildKnowledgeChunks(
@@ -405,19 +588,23 @@ function buildKnowledgeChunks(
 
   for (const symbol of symbols) {
     const file = files.find((entry) => entry.path === symbol.filePath);
+    const intelligenceSummary = buildIntelligenceSummary(symbol);
+    const enrichedContent = `${symbol.content}${intelligenceSummary}`;
     chunks.push({
       filePath: symbol.filePath,
       symbolKey: symbol.key,
+      references: symbol.references,
+      calls: symbol.calls,
       chunkKind: "SYMBOL",
       title: `${symbol.kind} ${symbol.name} (${symbol.filePath}:${symbol.startLine}-${symbol.endLine})`,
       language: file?.language ?? null,
       startLine: symbol.startLine,
       endLine: symbol.endLine,
-      content: symbol.content,
-      contentHash: hashText(symbol.content),
-      tokenCount: estimateTokenCount(symbol.content),
+      content: enrichedContent,
+      contentHash: hashText(enrichedContent),
+      tokenCount: estimateTokenCount(enrichedContent),
       embedding: generateEmbedding(
-        `${symbol.kind} ${symbol.name}\n${symbol.content}`,
+        `${symbol.kind} ${symbol.name}\n${enrichedContent}`,
       ),
     });
   }
@@ -506,6 +693,7 @@ async function processCloneJob(payload: CloneJobPayload) {
     });
 
     const symbols = extractSymbols(tempRepoDir, files);
+    const symbolReferences = buildSymbolReferences(symbols);
     const knowledgeChunks = buildKnowledgeChunks(tempRepoDir, files, symbols);
 
     await db.analysisJob.update({
@@ -518,6 +706,7 @@ async function processCloneJob(payload: CloneJobPayload) {
 
     await db.$transaction(async (tx) => {
       await tx.knowledgeChunk.deleteMany({ where: { repositoryId } });
+      await tx.symbolReference.deleteMany({ where: { repositoryId } });
       await tx.symbol.deleteMany({ where: { repositoryId } });
       await tx.repositoryFile.deleteMany({ where: { repositoryId } });
       await tx.repositoryFile.createMany({
@@ -570,6 +759,29 @@ async function processCloneJob(payload: CloneJobPayload) {
           symbol.id,
         ]),
       );
+
+      if (symbolReferences.length > 0) {
+        await tx.symbolReference.createMany({
+          data: symbolReferences
+            .map((reference) => {
+              const sourceSymbolId = symbolIdsByKey.get(
+                reference.sourceSymbolKey,
+              );
+              const targetSymbolId = symbolIdsByKey.get(
+                reference.targetSymbolKey,
+              );
+              if (!sourceSymbolId || !targetSymbolId) return null;
+              return {
+                repositoryId,
+                sourceSymbolId,
+                targetSymbolId,
+                kind: reference.kind,
+              };
+            })
+            .filter((reference) => reference !== null),
+          skipDuplicates: true,
+        });
+      }
 
       if (knowledgeChunks.length > 0) {
         await tx.knowledgeChunk.createMany({
@@ -639,6 +851,8 @@ async function processCloneJob(payload: CloneJobPayload) {
         isTest: chunk.file?.isTest ?? false,
         symbolName: chunk.symbol?.name,
         symbolKind: chunk.symbol?.kind,
+        references: extractIntelligenceList(chunk.content, "References"),
+        calls: extractIntelligenceList(chunk.content, "Calls"),
       },
     }));
 

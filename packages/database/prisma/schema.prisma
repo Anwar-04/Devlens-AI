@@ -35,6 +35,11 @@ enum KnowledgeChunkKind {
   MODULE
 }
 
+enum SymbolReferenceKind {
+  REFERENCE
+  CALL
+}
+
 model User {
   id           String   @id @default(uuid())
   email        String   @unique
@@ -98,6 +103,7 @@ model Repository {
   files           RepositoryFile[]
   modules         Module[]
   symbols         Symbol[]
+  symbolReferences SymbolReference[]
   knowledgeChunks KnowledgeChunk[]
 
   @@index([workspaceId])
@@ -169,11 +175,32 @@ model Symbol {
   repository      Repository       @relation(fields: [repositoryId], references: [id])
   file            RepositoryFile   @relation(fields: [fileId], references: [id])
   module          Module?          @relation(fields: [moduleId], references: [id])
+  outgoingReferences SymbolReference[] @relation("SymbolReferenceSource")
+  incomingReferences SymbolReference[] @relation("SymbolReferenceTarget")
   knowledgeChunks KnowledgeChunk[]
 
   @@index([repositoryId])
   @@index([repositoryId, name])
   @@index([fileId])
+}
+
+model SymbolReference {
+  id             String              @id @default(uuid())
+  repositoryId   String
+  sourceSymbolId String
+  targetSymbolId String
+  kind           SymbolReferenceKind
+  createdAt      DateTime            @default(now())
+
+  repository   Repository @relation(fields: [repositoryId], references: [id])
+  sourceSymbol Symbol     @relation("SymbolReferenceSource", fields: [sourceSymbolId], references: [id])
+  targetSymbol Symbol     @relation("SymbolReferenceTarget", fields: [targetSymbolId], references: [id])
+
+  @@unique([repositoryId, sourceSymbolId, targetSymbolId, kind])
+  @@index([repositoryId])
+  @@index([sourceSymbolId])
+  @@index([targetSymbolId])
+  @@index([kind])
 }
 
 model KnowledgeChunk {

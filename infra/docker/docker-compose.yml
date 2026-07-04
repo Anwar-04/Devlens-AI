@@ -6,7 +6,7 @@
       POSTGRES_USER: devlens
       POSTGRES_PASSWORD: devlens
     ports:
-      - "55432:5432"
+      - "55452:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
