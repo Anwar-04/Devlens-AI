@@ -114,6 +114,53 @@ type SearchResponse = {
   results: SearchResult[];
 };
 
+type SymbolRelation = {
+  referenceId: string;
+  referenceKind: "REFERENCE" | "CALL";
+  symbol: {
+    id: string;
+    name: string;
+    kind: string;
+    filePath: string;
+    startLine: number;
+    endLine: number;
+    signature?: string | null;
+    visibility?: string | null;
+  };
+};
+
+type RepositorySymbol = {
+  id: string;
+  name: string;
+  kind: string;
+  filePath: string;
+  startLine: number;
+  endLine: number;
+  signature?: string | null;
+  visibility?: string | null;
+  outgoingReferences: SymbolRelation[];
+  outgoingCalls: SymbolRelation[];
+  incomingReferences: SymbolRelation[];
+};
+
+type SymbolsResponse = {
+  repository: {
+    id: string;
+    owner: string;
+    name: string;
+  };
+  count: number;
+  symbols: RepositorySymbol[];
+};
+
+type SymbolReferencesResponse = {
+  repositoryId: string;
+  symbol: RepositorySymbol;
+};
+
+type SymbolRelationshipTab = "calls" | "references" | "referencedBy";
+type WorkspaceTab = "files" | "symbols" | "search" | "graph" | "docs";
+
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
 
 const navItems = [
@@ -148,12 +195,69 @@ const pipelineSteps = [
   { key: "completed", label: "Completed", description: "Workspace is ready" },
 ];
 
+const workspaceTabs: Array<{ key: WorkspaceTab; label: string }> = [
+  { key: "files", label: "Files" },
+  { key: "symbols", label: "Symbols" },
+  { key: "search", label: "Search" },
+  { key: "graph", label: "Graph" },
+  { key: "docs", label: "Docs" },
+];
+
 const modules = [
   { name: "Repository Intelligence", status: "Ready", icon: GitBranch },
   { name: "Architecture Agent", status: "Queued", icon: Network },
   { name: "Documentation Agent", status: "Queued", icon: FileCode2 },
-  { name: "Knowledge Graph", status: "Indexing soon", icon: Braces },
+  { name: "Knowledge Graph", status: "Pending", icon: Braces },
 ];
+
+function formatLineRange(item: { startLine: number; endLine: number }): string {
+  return `Lines ${item.startLine}-${item.endLine}`;
+}
+
+function formatCompactLineRange(item: {
+  startLine: number;
+  endLine: number;
+}): string {
+  return item.startLine === item.endLine
+    ? `L${item.startLine}`
+    : `L${item.startLine}-${item.endLine}`;
+}
+
+function buildSymbolOccurrenceLabels(symbols: RepositorySymbol[]) {
+  const totals = new Map<string, number>();
+  const seen = new Map<string, number>();
+  const labels = new Map<string, string>();
+
+  symbols.forEach((symbol) => {
+    const key = `${symbol.name}:${symbol.filePath}`;
+    totals.set(key, (totals.get(key) ?? 0) + 1);
+  });
+
+  symbols.forEach((symbol) => {
+    const key = `${symbol.name}:${symbol.filePath}`;
+    const total = totals.get(key) ?? 0;
+    if (total <= 1) return;
+
+    const next = (seen.get(key) ?? 0) + 1;
+    seen.set(key, next);
+    labels.set(symbol.id, `${next}/${total}`);
+  });
+
+  return labels;
+}
+
+function matchesSymbolQuery(symbol: RepositorySymbol, query: string): boolean {
+  const normalizedQuery = query.trim().toLowerCase();
+  if (!normalizedQuery) return true;
+
+  return [
+    symbol.name,
+    symbol.kind,
+    symbol.filePath,
+    symbol.visibility ?? "",
+    symbol.signature ?? "",
+  ].some((value) => value.toLowerCase().includes(normalizedQuery));
+}
 
 function formatBytes(bytes: number): string {
   if (!bytes) return "0 B";
@@ -458,6 +562,64 @@ function ExplorerTree({
     </div>
   );
 }
+
+function SymbolRelationshipRows({
+  items,
+  onSelectSymbol,
+}: {
+  items: SymbolRelation[];
+  onSelectSymbol: (symbolId: string) => void;
+}) {
+  return (
+    <div className="min-h-0 flex-1 overflow-auto rounded-md border border-line bg-white">
+      {items.length ? (
+        <div className="divide-y divide-line">
+          {items.map((item) => (
+            <button
+              key={item.referenceId}
+              onClick={() => onSelectSymbol(item.symbol.id)}
+              className="grid w-full grid-cols-[minmax(0,1fr)_88px] gap-3 px-3 py-2 text-left transition-colors hover:bg-cloud"
+            >
+              <div className="min-w-0">
+                <div className="flex min-w-0 items-center gap-2">
+                  <p className="truncate text-sm font-medium text-ink">
+                    {item.symbol.name}
+                  </p>
+                  <span className="shrink-0 rounded border border-line bg-cloud px-1.5 py-0.5 text-[11px] font-medium text-graphite">
+                    {item.symbol.kind}
+                  </span>
+                  {item.symbol.visibility ? (
+                    <span className="shrink-0 text-[11px] text-graphite">
+                      {item.symbol.visibility}
+                    </span>
+                  ) : null}
+                </div>
+                <p className="mt-1 truncate text-xs text-graphite">
+                  {item.symbol.filePath}
+                </p>
+              </div>
+              <div className="flex flex-col items-end justify-center gap-1">
+                <span className="text-xs font-medium text-ink">
+                  {formatCompactLineRange(item.symbol)}
+                </span>
+                <span className="rounded bg-signal/10 px-1.5 py-0.5 text-[11px] font-medium text-signal">
+                  {item.referenceKind.toLowerCase()}
+                </span>
+              </div>
+            </button>
+          ))}
+        </div>
+      ) : (
+        <div className="grid h-full min-h-[112px] place-items-center px-3 py-6 text-center">
+          <span className="rounded-md border border-dashed border-line bg-cloud px-3 py-2 text-sm text-graphite">
+            No linked symbols found.
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function Home() {
   const [repoUrl, setRepoUrl] = useState("https://github.com/vercel/ms");
   const [job, setJob] = useState<JobResponse | null>(null);
@@ -474,6 +636,20 @@ export default function Home() {
   );
   const [isSearching, setIsSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
+  const [symbolsResponse, setSymbolsResponse] =
+    useState<SymbolsResponse | null>(null);
+  const [selectedSymbolId, setSelectedSymbolId] = useState<string | null>(null);
+  const [selectedSymbolDetail, setSelectedSymbolDetail] =
+    useState<RepositorySymbol | null>(null);
+  const [isLoadingSymbols, setIsLoadingSymbols] = useState(false);
+  const [isLoadingSymbolReferences, setIsLoadingSymbolReferences] =
+    useState(false);
+  const [symbolsError, setSymbolsError] = useState<string | null>(null);
+  const [symbolQuery, setSymbolQuery] = useState("");
+  const [activeSymbolTab, setActiveSymbolTab] =
+    useState<SymbolRelationshipTab>("references");
+  const [activeWorkspaceTab, setActiveWorkspaceTab] =
+    useState<WorkspaceTab>("files");
 
   const repository = job?.repository;
   const repositoryReady = job?.status === "COMPLETED" && Boolean(repository);
@@ -492,6 +668,49 @@ export default function Home() {
     });
     return [...values].sort();
   }, [tree]);
+  const selectedSymbol =
+    selectedSymbolDetail ??
+    symbolsResponse?.symbols.find((symbol) => symbol.id === selectedSymbolId) ??
+    null;
+  const symbolOccurrenceLabels = useMemo(
+    () => buildSymbolOccurrenceLabels(symbolsResponse?.symbols ?? []),
+    [symbolsResponse],
+  );
+  const filteredSymbols = useMemo(
+    () =>
+      (symbolsResponse?.symbols ?? []).filter((symbol) =>
+        matchesSymbolQuery(symbol, symbolQuery),
+      ),
+    [symbolsResponse, symbolQuery],
+  );
+  const activeSymbolRelations = selectedSymbol
+    ? activeSymbolTab === "calls"
+      ? selectedSymbol.outgoingCalls
+      : activeSymbolTab === "references"
+        ? selectedSymbol.outgoingReferences
+        : selectedSymbol.incomingReferences
+    : [];
+  const symbolRelationshipTabs: Array<{
+    key: SymbolRelationshipTab;
+    label: string;
+    count: number;
+  }> = [
+    {
+      key: "calls",
+      label: "Calls",
+      count: selectedSymbol?.outgoingCalls.length ?? 0,
+    },
+    {
+      key: "references",
+      label: "Refs",
+      count: selectedSymbol?.outgoingReferences.length ?? 0,
+    },
+    {
+      key: "referencedBy",
+      label: "Inbound",
+      count: selectedSymbol?.incomingReferences.length ?? 0,
+    },
+  ];
 
   useEffect(() => {
     if (explorerTree.length) {
@@ -518,12 +737,7 @@ export default function Home() {
         setJob(nextJob);
 
         if (nextJob.status === "COMPLETED") {
-          const treeResponse = await fetch(
-            `${API_URL}/repositories/${nextJob.repositoryId}/tree`,
-          );
-          if (treeResponse.ok) {
-            setTree((await treeResponse.json()) as TreeResponse);
-          }
+          await loadRepositoryArtifacts(nextJob.repositoryId);
         }
       } catch (err) {
         setError(
@@ -535,6 +749,81 @@ export default function Home() {
     return () => window.clearInterval(interval);
   }, [job]);
 
+  useEffect(() => {
+    if (!selectedSymbolId || !job?.repositoryId) {
+      setSelectedSymbolDetail(null);
+      return;
+    }
+
+    let cancelled = false;
+    setIsLoadingSymbolReferences(true);
+
+    fetch(`${API_URL}/repositories/${job.repositoryId}/symbols/${selectedSymbolId}/references`)
+      .then(async (response) => {
+        if (!response.ok) {
+          const body = await response.json().catch(() => null);
+          throw new Error(body?.message ?? "Unable to load symbol references.");
+        }
+        return response.json() as Promise<SymbolReferencesResponse>;
+      })
+      .then((body) => {
+        if (!cancelled) {
+          setSelectedSymbolDetail(body.symbol);
+          setSymbolsError(null);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setSelectedSymbolDetail(null);
+          setSymbolsError(
+            err instanceof Error
+              ? err.message
+              : "Unable to load symbol references.",
+          );
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoadingSymbolReferences(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [job?.repositoryId, selectedSymbolId]);
+
+  async function loadRepositoryArtifacts(repositoryId: string) {
+    setIsLoadingSymbols(true);
+    setSymbolsError(null);
+
+    try {
+      const [treeResponse, symbolsFetchResponse] = await Promise.all([
+        fetch(`${API_URL}/repositories/${repositoryId}/tree`),
+        fetch(`${API_URL}/repositories/${repositoryId}/symbols`),
+      ]);
+
+      if (treeResponse.ok) {
+        setTree((await treeResponse.json()) as TreeResponse);
+      }
+
+      if (!symbolsFetchResponse.ok) {
+        const body = await symbolsFetchResponse.json().catch(() => null);
+        throw new Error(body?.message ?? "Unable to load symbol intelligence.");
+      }
+
+      const nextSymbols =
+        (await symbolsFetchResponse.json()) as SymbolsResponse;
+      setSymbolsResponse(nextSymbols);
+      setSelectedSymbolId((current) => current ?? nextSymbols.symbols[0]?.id ?? null);
+      setSelectedSymbolDetail(null);
+    } catch (err) {
+      setSymbolsError(
+        err instanceof Error ? err.message : "Unable to load symbol intelligence.",
+      );
+    } finally {
+      setIsLoadingSymbols(false);
+    }
+  }
+
   async function analyzeRepository() {
     setError(null);
     setTree(null);
@@ -542,6 +831,12 @@ export default function Home() {
     setExpanded(new Set());
     setSearchResponse(null);
     setSearchError(null);
+    setSymbolsResponse(null);
+    setSelectedSymbolId(null);
+    setSelectedSymbolDetail(null);
+    setSymbolsError(null);
+    setSymbolQuery("");
+    setActiveSymbolTab("references");
     setIsSubmitting(true);
 
     try {
@@ -611,6 +906,7 @@ export default function Home() {
   }
 
   function focusSearchResult(result: SearchResult) {
+    setActiveWorkspaceTab("files");
     setFileQuery(result.path);
     setLanguageFilter("all");
     setExpanded((current) => {
@@ -620,6 +916,25 @@ export default function Home() {
     });
     const node = findExplorerNode(explorerTree, result.path);
     if (node) setSelectedNode(node);
+  }
+
+  function selectSymbol(symbolId: string) {
+    const symbol =
+      symbolsResponse?.symbols.find((item) => item.id === symbolId) ??
+      selectedSymbolDetail;
+    setSelectedSymbolId(symbolId);
+
+    if (symbol) {
+      setFileQuery(symbol.filePath);
+      setLanguageFilter("all");
+      setExpanded((current) => {
+        const next = new Set(current);
+        getParentPaths(symbol.filePath).forEach((path) => next.add(path));
+        return next;
+      });
+      const node = findExplorerNode(explorerTree, symbol.filePath);
+      if (node) setSelectedNode(node);
+    }
   }
 
   const activeStepIndex = getStepIndex(job?.currentStep);
@@ -837,8 +1152,35 @@ export default function Home() {
             ))}
           </div>
 
-          <div className="grid grid-cols-[1fr_360px] gap-4">
-            <div className="rounded-md border border-line bg-white">
+          <div className="mb-4 flex items-center gap-1 rounded-md border border-line bg-white p-1">
+            {workspaceTabs.map((tab) => (
+              <button
+                key={tab.key}
+                onClick={() => setActiveWorkspaceTab(tab.key)}
+                className={`h-9 flex-1 rounded px-3 text-sm font-medium transition-colors ${
+                  activeWorkspaceTab === tab.key
+                    ? "bg-ink text-white"
+                    : "text-graphite hover:bg-cloud"
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+
+          <div
+            className={
+              activeWorkspaceTab === "files" ||
+              activeWorkspaceTab === "symbols"
+                ? "grid grid-cols-1 gap-4"
+                : "hidden"
+            }
+          >
+            <div
+              className={`rounded-md border border-line bg-white ${
+                activeWorkspaceTab === "files" ? "" : "hidden"
+              }`}
+            >
               <div className="border-b border-line px-4 py-3">
                 <div className="flex items-center justify-between">
                   <div>
@@ -961,171 +1303,417 @@ export default function Home() {
               </div>
             </div>
 
-            <div className="grid gap-4">
-              {modules.map((module) => {
-                const Icon = module.icon;
-                return (
-                  <div
-                    key={module.name}
-                    className="rounded-md border border-line bg-white p-4"
-                  >
-                    <Icon size={20} className="text-signal" />
-                    <p className="mt-3 font-medium">{module.name}</p>
-                    <p className="mt-1 text-sm text-graphite">
-                      {module.status}
+            <div
+              className={`rounded-md border border-line bg-white ${
+                activeWorkspaceTab === "symbols" ? "" : "hidden"
+              }`}
+            >
+              <div className="border-b border-line px-4 py-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="font-semibold">Symbol intelligence</p>
+                    <p className="text-sm text-graphite">
+                      {symbolsResponse
+                        ? `${symbolsResponse.count} symbols extracted`
+                        : "Run an analysis to inspect code relationships."}
                     </p>
                   </div>
-                );
-              })}
-            </div>
-          </div>
-        </section>
-
-        <aside className="flex min-h-0 flex-col border-l border-line bg-white p-4">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <p className="font-semibold">Repository Search</p>
-              <p className="mt-1 text-sm leading-6 text-graphite">
-                Search indexed code chunks with file and line citations.
-              </p>
-            </div>
-            <Search size={18} className="shrink-0 text-signal" />
-          </div>
-
-          <form onSubmit={searchRepository} className="mt-4">
-            <div className="flex items-center gap-2 rounded-md border border-line bg-cloud px-3 py-2 focus-within:border-signal">
-              <Search size={15} className="shrink-0 text-graphite" />
-              <input
-                value={searchQuery}
-                onChange={(event) => setSearchQuery(event.target.value)}
-                disabled={!repositoryReady}
-                className="min-w-0 flex-1 bg-transparent text-sm outline-none disabled:cursor-not-allowed"
-                placeholder={
-                  repositoryReady
-                    ? "Search symbols, paths, code"
-                    : "Analyze a repository first"
-                }
-              />
-            </div>
-            <button
-              type="submit"
-              disabled={!repositoryReady || isSearching || !searchQuery.trim()}
-              className="mt-3 inline-flex h-10 w-full items-center justify-center gap-2 rounded-md bg-ink px-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {isSearching ? (
-                <Loader2 size={16} className="animate-spin" />
-              ) : (
-                <Search size={16} />
-              )}
-              Search repository
-            </button>
-          </form>
-
-          {searchError ? (
-            <div className="mt-3 flex items-start gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-              <AlertCircle size={16} className="mt-0.5 shrink-0" />
-              <span>{searchError}</span>
-            </div>
-          ) : null}
-
-          <div className="mt-4 min-h-0 flex-1 overflow-auto">
-            {!repositoryReady ? (
-              <div className="rounded-md border border-line bg-cloud p-3 text-sm leading-6 text-graphite">
-                Search becomes available after repository analysis completes.
-              </div>
-            ) : searchResponse ? (
-              <div>
-                <div className="mb-3 flex items-center justify-between text-sm">
-                  <span className="font-medium">
-                    {searchResponse.count} results
-                  </span>
-                  <span
-                    className="max-w-[180px] truncate text-graphite"
-                    title={searchResponse.query}
-                  >
-                    {searchResponse.query}
-                  </span>
+                  <Braces size={18} className="shrink-0 text-signal" />
                 </div>
-                <div className="space-y-3">
-                  {searchResponse.results.length ? (
-                    searchResponse.results.map((result) => (
-                      <button
-                        key={result.id}
-                        onClick={() => focusSearchResult(result)}
-                        className="w-full rounded-md border border-line bg-white p-3 text-left hover:border-signal hover:bg-cloud"
-                      >
-                        <div className="flex min-w-0 items-start justify-between gap-2">
-                          <div className="min-w-0">
-                            <p
-                              className="truncate text-sm font-semibold text-ink"
-                              title={result.path}
-                            >
-                              {result.path}
-                            </p>
-                            <p className="mt-1 text-xs text-graphite">
-                              Lines {result.startLine}-{result.endLine}
-                              {result.language ? ` • ${result.language}` : ""}
-                            </p>
-                            {result.symbol ? (
-                              <p className="mt-1 truncate text-xs font-medium text-signal">
-                                {result.symbol.kind} {result.symbol.name}
-                              </p>
+              </div>
+
+              <div className="grid h-[640px] grid-cols-[360px_1fr]">
+                <div className="min-h-0 border-r border-line p-3">
+                  <div className="mb-3 flex h-9 items-center gap-2 rounded-md border border-line bg-cloud px-3 focus-within:border-signal">
+                    <Search size={14} className="shrink-0 text-graphite" />
+                    <input
+                      value={symbolQuery}
+                      onChange={(event) => setSymbolQuery(event.target.value)}
+                      disabled={!repositoryReady}
+                      className="min-w-0 flex-1 bg-transparent text-sm outline-none disabled:cursor-not-allowed"
+                      placeholder={
+                        repositoryReady ? "Filter symbols" : "Analyze first"
+                      }
+                    />
+                  </div>
+
+                  {!repositoryReady ? (
+                    <div className="grid h-[220px] place-items-center rounded-md border border-line bg-cloud p-4 text-center text-sm leading-6 text-graphite">
+                      Symbol extraction appears here after analysis completes.
+                    </div>
+                  ) : isLoadingSymbols ? (
+                    <div className="grid h-[220px] place-items-center text-sm text-graphite">
+                      <span className="inline-flex items-center gap-2">
+                        <Loader2 size={16} className="animate-spin" />
+                        Loading symbols
+                      </span>
+                    </div>
+                  ) : symbolsError ? (
+                    <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm leading-6 text-red-700">
+                      {symbolsError}
+                    </div>
+                  ) : symbolsResponse?.symbols.length ? (
+                    <div className="h-[220px] overflow-auto rounded-md border border-line bg-white">
+                      {filteredSymbols.length ? (
+                        <div className="divide-y divide-line">
+                          {filteredSymbols.map((symbol) => {
+                        const isSelected = selectedSymbolId === symbol.id;
+                        const relationCount =
+                          symbol.outgoingCalls.length +
+                          symbol.outgoingReferences.length +
+                          symbol.incomingReferences.length;
+                        const occurrenceLabel =
+                          symbolOccurrenceLabels.get(symbol.id);
+
+                        return (
+                          <button
+                            key={symbol.id}
+                            onClick={() => selectSymbol(symbol.id)}
+                            className={`relative grid w-full grid-cols-[minmax(0,1fr)_58px] gap-3 px-3 py-2 text-left transition-colors hover:bg-cloud ${
+                              isSelected ? "bg-signal/5" : ""
+                            }`}
+                          >
+                            {isSelected ? (
+                              <span className="absolute left-0 top-2 h-[calc(100%-1rem)] w-0.5 rounded-r bg-signal" />
                             ) : null}
+                              <div className="min-w-0">
+                                  <div className="flex min-w-0 items-center gap-2">
+                                    <p className="truncate text-sm font-semibold text-ink">
+                                      {symbol.name}
+                                    </p>
+                                    {occurrenceLabel ? (
+                                      <span className="shrink-0 rounded border border-line bg-cloud px-1.5 py-0.5 text-[11px] font-medium text-graphite">
+                                        {occurrenceLabel}
+                                      </span>
+                                    ) : null}
+                                  </div>
+                                  <p className="mt-0.5 truncate text-xs text-graphite">
+                                    {symbol.kind}
+                                    {symbol.visibility
+                                      ? ` • ${symbol.visibility}`
+                                      : ""}
+                                  </p>
+                                  <p className="mt-1 truncate text-xs text-graphite">
+                                    {symbol.filePath} •{" "}
+                                    {formatCompactLineRange(symbol)}
+                                  </p>
+                              </div>
+                              <div className="flex flex-col items-end justify-center gap-0.5">
+                                <span className="tabular-nums text-sm font-semibold text-ink">
+                                  {relationCount}
+                                </span>
+                                <span className="text-[11px] uppercase tracking-wide text-graphite">
+                                  links
+                                </span>
+                              </div>
+                          </button>
+                        );
+                          })}
+                        </div>
+                      ) : (
+                        <div className="grid h-full place-items-center px-3 text-center text-sm text-graphite">
+                          No symbols match this filter.
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="grid h-[220px] place-items-center rounded-md border border-line bg-cloud p-4 text-center text-sm leading-6 text-graphite">
+                      No parser-backed symbols were extracted for this
+                      repository.
+                    </div>
+                  )}
+                </div>
+
+                <div className="min-h-0 bg-cloud/50 p-4">
+                  {selectedSymbol ? (
+                    <div className="flex h-full min-h-0 flex-col gap-3">
+                      <div className="rounded-md border border-line bg-white px-3 py-2.5">
+                        <div className="flex min-w-0 items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-semibold text-ink">
+                              {selectedSymbol.name}
+                            </p>
+                            <p className="mt-0.5 text-xs text-graphite">
+                              {selectedSymbol.kind}
+                              {selectedSymbol.visibility
+                                ? ` • ${selectedSymbol.visibility}`
+                                : ""}
+                            </p>
                           </div>
-                          <div className="flex shrink-0 flex-col items-end gap-1">
-                            <span className="rounded-md bg-cloud px-2 py-1 text-xs font-medium text-graphite">
-                              {result.score}
-                            </span>
+                          {isLoadingSymbolReferences ? (
+                            <Loader2
+                              size={16}
+                              className="mt-1 shrink-0 animate-spin text-signal"
+                            />
+                          ) : null}
+                        </div>
+                        <p className="mt-2 truncate text-xs text-graphite">
+                          {selectedSymbol.filePath} •{" "}
+                          {formatLineRange(selectedSymbol)}
+                        </p>
+                        {selectedSymbol.signature ? (
+                          <pre
+                            title={selectedSymbol.signature}
+                            className="mt-2 max-h-16 overflow-hidden whitespace-pre-wrap break-words rounded-md border border-line bg-cloud px-3 py-2 text-xs leading-5 text-ink"
+                          >
+                            {selectedSymbol.signature}
+                          </pre>
+                        ) : null}
+                      </div>
+
+                      <div className="grid grid-cols-3 gap-1 rounded-md border border-line bg-cloud p-1">
+                        {symbolRelationshipTabs.map((tab) => (
+                          <button
+                            key={tab.key}
+                            onClick={() => setActiveSymbolTab(tab.key)}
+                            className={`flex min-w-0 items-center justify-center gap-1.5 rounded px-2 py-1.5 text-xs font-medium transition-colors ${
+                              activeSymbolTab === tab.key
+                                ? "bg-white text-ink shadow-sm"
+                                : "text-graphite hover:bg-white/70"
+                            }`}
+                          >
+                            <span>{tab.label}</span>
                             <span
-                              className={`rounded-md px-2 py-1 text-xs font-medium ${
-                                result.chunkKind === "SYMBOL"
-                                  ? "bg-signal/10 text-signal"
-                                  : result.isTest
-                                    ? "bg-amber/10 text-amber"
-                                    : "bg-mint/10 text-mint"
+                              className={`rounded px-1.5 py-0.5 text-[11px] tabular-nums ${
+                                activeSymbolTab === tab.key
+                                  ? "bg-cloud text-ink"
+                                  : "bg-cloud text-graphite"
                               }`}
                             >
-                              {result.chunkKind === "SYMBOL"
-                                ? "symbol"
-                                : result.isTest
-                                  ? "test"
-                                  : "source"}
+                              {tab.count}
                             </span>
-                            {result.vectorScore ? (
-                              <span className="rounded-md bg-cloud px-2 py-1 text-xs font-medium text-graphite">
-                                vector
-                              </span>
-                            ) : null}
-                          </div>
-                        </div>
-                        <p className="mt-3 line-clamp-5 whitespace-pre-wrap break-words text-xs leading-5 text-graphite">
-                          {highlightSnippet(result.snippet, result.matchedTerm)}
-                        </p>
-                      </button>
-                    ))
+                          </button>
+                        ))}
+                      </div>
+
+                      <SymbolRelationshipRows
+                        items={activeSymbolRelations}
+                        onSelectSymbol={selectSymbol}
+                      />
+                    </div>
                   ) : (
-                    <div className="rounded-md border border-line bg-cloud p-3 text-sm leading-6 text-graphite">
-                      No chunks matched this query.
+                    <div className="rounded-md border border-line bg-white p-3 text-sm leading-6 text-graphite">
+                      Select a symbol to inspect calls, references, and inbound
+                      usage.
                     </div>
                   )}
                 </div>
               </div>
-            ) : (
-              <div className="space-y-3">
-                {["function", "parse", "format"].map((query) => (
+            </div>
+          </div>
+
+          {activeWorkspaceTab === "search" ? (
+            <div className="rounded-md border border-line bg-white">
+              <div className="border-b border-line px-4 py-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="font-semibold">Repository search</p>
+                    <p className="text-sm text-graphite">
+                      Search indexed code chunks with file, symbol, and line
+                      citations.
+                    </p>
+                  </div>
+                  <Search size={18} className="shrink-0 text-signal" />
+                </div>
+                <form
+                  onSubmit={searchRepository}
+                  className="mt-3 grid grid-cols-[1fr_160px] gap-2"
+                >
+                  <div className="flex h-10 items-center gap-2 rounded-md border border-line bg-cloud px-3 focus-within:border-signal">
+                    <Search size={15} className="shrink-0 text-graphite" />
+                    <input
+                      value={searchQuery}
+                      onChange={(event) => setSearchQuery(event.target.value)}
+                      disabled={!repositoryReady}
+                      className="min-w-0 flex-1 bg-transparent text-sm outline-none disabled:cursor-not-allowed"
+                      placeholder={
+                        repositoryReady
+                          ? "Search symbols, paths, code"
+                          : "Analyze a repository first"
+                      }
+                    />
+                  </div>
                   <button
-                    key={query}
-                    onClick={() => {
-                      setSearchQuery(query);
-                      void searchRepository(undefined, query);
-                    }}
-                    className="w-full rounded-md border border-line bg-cloud p-3 text-left text-sm text-graphite hover:border-signal"
+                    type="submit"
+                    disabled={
+                      !repositoryReady || isSearching || !searchQuery.trim()
+                    }
+                    className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-ink px-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
                   >
-                    {query}
+                    {isSearching ? (
+                      <Loader2 size={16} className="animate-spin" />
+                    ) : (
+                      <Search size={16} />
+                    )}
+                    Search
                   </button>
-                ))}
+                </form>
               </div>
-            )}
+
+              <div className="h-[640px] overflow-auto p-4">
+                {searchError ? (
+                  <div className="mb-3 flex items-start gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                    <AlertCircle size={16} className="mt-0.5 shrink-0" />
+                    <span>{searchError}</span>
+                  </div>
+                ) : null}
+
+                {!repositoryReady ? (
+                  <div className="grid h-full place-items-center rounded-md border border-line bg-cloud text-center text-sm leading-6 text-graphite">
+                    Search becomes available after repository analysis
+                    completes.
+                  </div>
+                ) : searchResponse ? (
+                  <div>
+                    <div className="mb-3 flex items-center justify-between text-sm">
+                      <span className="font-medium">
+                        {searchResponse.count} results
+                      </span>
+                      <span
+                        className="max-w-[320px] truncate text-graphite"
+                        title={searchResponse.query}
+                      >
+                        {searchResponse.query}
+                      </span>
+                    </div>
+                    <div className="grid gap-3">
+                      {searchResponse.results.length ? (
+                        searchResponse.results.map((result) => (
+                          <button
+                            key={result.id}
+                            onClick={() => focusSearchResult(result)}
+                            className="w-full rounded-md border border-line bg-white p-3 text-left hover:border-signal hover:bg-cloud"
+                          >
+                            <div className="flex min-w-0 items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <p
+                                  className="truncate text-sm font-semibold text-ink"
+                                  title={result.path}
+                                >
+                                  {result.path}
+                                </p>
+                                <p className="mt-1 text-xs text-graphite">
+                                  Lines {result.startLine}-{result.endLine}
+                                  {result.language
+                                    ? ` • ${result.language}`
+                                    : ""}
+                                </p>
+                                {result.symbol ? (
+                                  <p className="mt-1 truncate text-xs font-medium text-signal">
+                                    {result.symbol.kind} {result.symbol.name}
+                                  </p>
+                                ) : null}
+                              </div>
+                              <span className="rounded-md bg-cloud px-2 py-1 text-xs font-medium text-graphite">
+                                {result.score}
+                              </span>
+                            </div>
+                            <p className="mt-3 line-clamp-4 whitespace-pre-wrap break-words text-xs leading-5 text-graphite">
+                              {highlightSnippet(
+                                result.snippet,
+                                result.matchedTerm,
+                              )}
+                            </p>
+                          </button>
+                        ))
+                      ) : (
+                        <div className="rounded-md border border-line bg-cloud p-3 text-sm leading-6 text-graphite">
+                          No chunks matched this query.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-3 gap-3">
+                    {["function", "parse", "format"].map((query) => (
+                      <button
+                        key={query}
+                        onClick={() => {
+                          setSearchQuery(query);
+                          void searchRepository(undefined, query);
+                        }}
+                        className="rounded-md border border-line bg-cloud p-3 text-left text-sm text-graphite hover:border-signal"
+                      >
+                        {query}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : null}
+
+          {activeWorkspaceTab === "graph" ? (
+            <div className="grid h-[640px] place-items-center rounded-md border border-line bg-white p-6 text-center">
+              <div>
+                <Network className="mx-auto mb-3 text-signal" />
+                <p className="font-semibold">Knowledge graph</p>
+                <p className="mt-2 max-w-md text-sm leading-6 text-graphite">
+                  Dependency and architecture graph exploration will attach
+                  here as the graph intelligence milestone expands.
+                </p>
+              </div>
+            </div>
+          ) : null}
+
+          {activeWorkspaceTab === "docs" ? (
+            <div className="grid h-[640px] place-items-center rounded-md border border-line bg-white p-6 text-center">
+              <div>
+                <FileCode2 className="mx-auto mb-3 text-signal" />
+                <p className="font-semibold">Documentation agent</p>
+                <p className="mt-2 max-w-md text-sm leading-6 text-graphite">
+                  Generated docs, summaries, and explanation workflows will
+                  live here as documentation intelligence comes online.
+                </p>
+              </div>
+            </div>
+          ) : null}
+        </section>
+
+        <aside className="flex min-h-0 flex-col border-l border-line bg-white p-4">
+          <div>
+            <p className="font-semibold">Intelligence rail</p>
+            <p className="mt-1 text-sm leading-6 text-graphite">
+              Agents and knowledge services attached to this repository.
+            </p>
+          </div>
+
+          <div className="mt-4 grid gap-3">
+            {modules.map((module) => {
+              const Icon = module.icon;
+              const active = module.name === "Repository Intelligence";
+              return (
+                <div
+                  key={module.name}
+                  className="rounded-md border border-line bg-white p-4"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <Icon size={20} className="text-signal" />
+                    <span
+                      className={`rounded px-2 py-1 text-xs font-medium ${
+                        active
+                          ? "bg-mint/10 text-mint"
+                          : "bg-cloud text-graphite"
+                      }`}
+                    >
+                      {module.status}
+                    </span>
+                  </div>
+                  <p className="mt-3 font-medium">{module.name}</p>
+                  <p className="mt-1 text-sm leading-6 text-graphite">
+                    {module.name === "Repository Intelligence"
+                      ? repositoryReady
+                        ? "Repository structure, symbols, and searchable chunks are available."
+                        : "Ready to summarize repository metadata after analysis."
+                      : module.name === "Knowledge Graph"
+                        ? symbolsResponse?.count
+                          ? `${symbolsResponse.count} symbols indexed for graph expansion.`
+                          : "Pending symbol and relationship indexing."
+                        : "Queued for a future analysis milestone."}
+                  </p>
+                </div>
+              );
+            })}
           </div>
         </aside>
       </section>

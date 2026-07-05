@@ -75,6 +75,145 @@ async function ensureWorkspace(workspaceId?: string): Promise<string> {
   return workspace.id;
 }
 
+function serializeRelatedSymbol(reference: {
+  id: string;
+  kind: "REFERENCE" | "CALL";
+  sourceSymbol?: {
+    id: string;
+    name: string;
+    kind: string;
+    startLine: number;
+    endLine: number;
+    signature: string | null;
+    visibility: string | null;
+    file: { path: string };
+  };
+  targetSymbol?: {
+    id: string;
+    name: string;
+    kind: string;
+    startLine: number;
+    endLine: number;
+    signature: string | null;
+    visibility: string | null;
+    file: { path: string };
+  };
+}) {
+  const symbol = reference.targetSymbol ?? reference.sourceSymbol;
+  if (!symbol) return null;
+
+  return {
+    referenceId: reference.id,
+    referenceKind: reference.kind,
+    symbol: {
+      id: symbol.id,
+      name: symbol.name,
+      kind: symbol.kind,
+      filePath: symbol.file.path,
+      startLine: symbol.startLine,
+      endLine: symbol.endLine,
+      signature: symbol.signature,
+      visibility: symbol.visibility
+    }
+  };
+}
+
+function serializeSymbol(symbol: {
+  id: string;
+  name: string;
+  kind: string;
+  startLine: number;
+  endLine: number;
+  signature: string | null;
+  visibility: string | null;
+  file: { path: string };
+  outgoingReferences: Array<{
+    id: string;
+    kind: "REFERENCE" | "CALL";
+    targetSymbol: {
+      id: string;
+      name: string;
+      kind: string;
+      startLine: number;
+      endLine: number;
+      signature: string | null;
+      visibility: string | null;
+      file: { path: string };
+    };
+  }>;
+  incomingReferences: Array<{
+    id: string;
+    kind: "REFERENCE" | "CALL";
+    sourceSymbol: {
+      id: string;
+      name: string;
+      kind: string;
+      startLine: number;
+      endLine: number;
+      signature: string | null;
+      visibility: string | null;
+      file: { path: string };
+    };
+  }>;
+}) {
+  const outgoingReferences = symbol.outgoingReferences
+    .filter((reference) => reference.kind === "REFERENCE")
+    .map((reference) => serializeRelatedSymbol(reference))
+    .filter(Boolean);
+  const outgoingCalls = symbol.outgoingReferences
+    .filter((reference) => reference.kind === "CALL")
+    .map((reference) => serializeRelatedSymbol(reference))
+    .filter(Boolean);
+  const incomingReferences = symbol.incomingReferences
+    .map((reference) => serializeRelatedSymbol(reference))
+    .filter(Boolean);
+
+  return {
+    id: symbol.id,
+    name: symbol.name,
+    kind: symbol.kind,
+    filePath: symbol.file.path,
+    startLine: symbol.startLine,
+    endLine: symbol.endLine,
+    signature: symbol.signature,
+    visibility: symbol.visibility,
+    outgoingReferences,
+    outgoingCalls,
+    incomingReferences
+  };
+}
+
+const symbolReferenceInclude = {
+  outgoingReferences: {
+    orderBy: { kind: "asc" as const },
+    include: {
+      targetSymbol: {
+        include: {
+          file: {
+            select: {
+              path: true
+            }
+          }
+        }
+      }
+    }
+  },
+  incomingReferences: {
+    orderBy: { kind: "asc" as const },
+    include: {
+      sourceSymbol: {
+        include: {
+          file: {
+            select: {
+              path: true
+            }
+          }
+        }
+      }
+    }
+  }
+};
+
 @Controller("repositories")
 export class RepositoriesController {
   @Post()
@@ -269,6 +408,66 @@ export class RepositoriesController {
       repositoryId: id,
       fileCount: files.length,
       nodes
+    };
+  }
+
+  @Get(":id/symbols")
+  async symbols(@Param("id") id: string) {
+    const repo = await db.repository.findUnique({
+      where: { id },
+      select: { id: true, owner: true, name: true }
+    });
+    if (!repo) {
+      throw new NotFoundException("Repository not found");
+    }
+
+    const symbols = await db.symbol.findMany({
+      where: { repositoryId: id },
+      orderBy: [{ file: { path: "asc" } }, { startLine: "asc" }, { name: "asc" }],
+      include: {
+        file: {
+          select: {
+            path: true
+          }
+        },
+        ...symbolReferenceInclude
+      }
+    });
+
+    return {
+      repository: repo,
+      count: symbols.length,
+      symbols: symbols.map(serializeSymbol)
+    };
+  }
+
+  @Get(":id/symbols/:symbolId/references")
+  async symbolReferences(
+    @Param("id") id: string,
+    @Param("symbolId") symbolId: string
+  ) {
+    const symbol = await db.symbol.findFirst({
+      where: {
+        id: symbolId,
+        repositoryId: id
+      },
+      include: {
+        file: {
+          select: {
+            path: true
+          }
+        },
+        ...symbolReferenceInclude
+      }
+    });
+
+    if (!symbol) {
+      throw new NotFoundException("Symbol not found");
+    }
+
+    return {
+      repositoryId: id,
+      symbol: serializeSymbol(symbol)
     };
   }
 }
