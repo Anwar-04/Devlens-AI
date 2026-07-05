@@ -183,6 +183,21 @@ function serializeSymbol(symbol: {
   };
 }
 
+function buildSymbolSourceLines(
+  source: string,
+  startLine: number,
+  endLine: number
+) {
+  return source.split("\n").map((content, index) => {
+    const lineNumber = startLine + index;
+    return {
+      lineNumber,
+      content,
+      isSymbolLine: lineNumber >= startLine && lineNumber <= endLine
+    };
+  });
+}
+
 const symbolReferenceInclude = {
   outgoingReferences: {
     orderBy: { kind: "asc" as const },
@@ -468,6 +483,69 @@ export class RepositoriesController {
     return {
       repositoryId: id,
       symbol: serializeSymbol(symbol)
+    };
+  }
+
+  @Get(":id/symbols/:symbolId/source")
+  async symbolSource(
+    @Param("id") id: string,
+    @Param("symbolId") symbolId: string
+  ) {
+    const symbol = await db.symbol.findFirst({
+      where: {
+        id: symbolId,
+        repositoryId: id
+      },
+      include: {
+        file: {
+          select: {
+            path: true,
+            language: true
+          }
+        }
+      }
+    });
+
+    if (!symbol) {
+      throw new NotFoundException("Symbol not found");
+    }
+
+    const sourceChunk = await db.knowledgeChunk.findFirst({
+      where: {
+        repositoryId: id,
+        symbolId,
+        chunkKind: "SYMBOL"
+      },
+      select: {
+        content: true
+      }
+    });
+
+    const source = sourceChunk?.content
+      .split("\n\nCode intelligence:\n")[0]
+      ?.trimEnd();
+    const fallbackSource = symbol.signature?.trim();
+    const previewSource = source || fallbackSource || "";
+
+    return {
+      repositoryId: id,
+      symbol: {
+        id: symbol.id,
+        name: symbol.name,
+        kind: symbol.kind,
+        filePath: symbol.file.path,
+        startLine: symbol.startLine,
+        endLine: symbol.endLine,
+        language: symbol.file.language,
+        sourceAvailable: Boolean(source),
+        sourceLines: previewSource
+          ? buildSymbolSourceLines(
+              previewSource,
+              symbol.startLine,
+              source ? symbol.endLine : symbol.startLine
+            )
+          : []
+      }
     };
   }
 }

@@ -158,6 +158,27 @@ type SymbolReferencesResponse = {
   symbol: RepositorySymbol;
 };
 
+type SymbolSourceLine = {
+  lineNumber: number;
+  content: string;
+  isSymbolLine: boolean;
+};
+
+type SymbolSourceResponse = {
+  repositoryId: string;
+  symbol: {
+    id: string;
+    name: string;
+    kind: string;
+    filePath: string;
+    startLine: number;
+    endLine: number;
+    language?: string | null;
+    sourceAvailable: boolean;
+    sourceLines: SymbolSourceLine[];
+  };
+};
+
 type SymbolRelationshipTab = "calls" | "references" | "referencedBy";
 type WorkspaceTab = "files" | "symbols" | "search" | "graph" | "docs";
 
@@ -620,6 +641,73 @@ function SymbolRelationshipRows({
   );
 }
 
+function SymbolSourcePreview({
+  source,
+  isLoading,
+  error,
+}: {
+  source: SymbolSourceResponse | null;
+  isLoading: boolean;
+  error: string | null;
+}) {
+  return (
+    <div className="rounded-md border border-line bg-white">
+      <div className="flex items-center justify-between gap-3 border-b border-line px-3 py-2">
+        <div className="min-w-0">
+          <p className="text-sm font-semibold text-ink">Source preview</p>
+          <p className="truncate text-xs text-graphite">
+            {source
+              ? `${source.symbol.filePath} • ${formatLineRange(source.symbol)}`
+              : "Select a symbol to inspect source lines."}
+          </p>
+        </div>
+        {source?.symbol.language ? (
+          <span className="shrink-0 rounded bg-cloud px-2 py-1 text-xs font-medium text-graphite">
+            {source.symbol.language}
+          </span>
+        ) : null}
+      </div>
+
+      <div className="h-56 overflow-auto bg-[#0f172a] py-2 text-xs leading-5 text-slate-100">
+        {isLoading ? (
+          <div className="grid h-full place-items-center text-slate-300">
+            <span className="inline-flex items-center gap-2">
+              <Loader2 size={15} className="animate-spin" />
+              Loading source
+            </span>
+          </div>
+        ) : error ? (
+          <div className="grid h-full place-items-center px-4 text-center text-red-200">
+            {error}
+          </div>
+        ) : source?.symbol.sourceLines.length ? (
+          <pre className="font-mono">
+            {source.symbol.sourceLines.map((line) => (
+              <div
+                key={line.lineNumber}
+                className={`grid grid-cols-[56px_1fr] px-3 ${
+                  line.isSymbolLine ? "bg-signal/10" : ""
+                }`}
+              >
+                <span className="select-none pr-4 text-right text-slate-500">
+                  {line.lineNumber}
+                </span>
+                <code className="whitespace-pre-wrap break-words">
+                  {line.content || " "}
+                </code>
+              </div>
+            ))}
+          </pre>
+        ) : (
+          <div className="grid h-full place-items-center px-4 text-center text-slate-300">
+            Source preview is not available for this symbol.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function Home() {
   const [repoUrl, setRepoUrl] = useState("https://github.com/vercel/ms");
   const [job, setJob] = useState<JobResponse | null>(null);
@@ -645,6 +733,12 @@ export default function Home() {
   const [isLoadingSymbolReferences, setIsLoadingSymbolReferences] =
     useState(false);
   const [symbolsError, setSymbolsError] = useState<string | null>(null);
+  const [selectedSymbolSource, setSelectedSymbolSource] =
+    useState<SymbolSourceResponse | null>(null);
+  const [isLoadingSymbolSource, setIsLoadingSymbolSource] = useState(false);
+  const [symbolSourceError, setSymbolSourceError] = useState<string | null>(
+    null,
+  );
   const [symbolQuery, setSymbolQuery] = useState("");
   const [activeSymbolTab, setActiveSymbolTab] =
     useState<SymbolRelationshipTab>("references");
@@ -791,6 +885,49 @@ export default function Home() {
     };
   }, [job?.repositoryId, selectedSymbolId]);
 
+  useEffect(() => {
+    if (!selectedSymbolId || !job?.repositoryId) {
+      setSelectedSymbolSource(null);
+      setSymbolSourceError(null);
+      return;
+    }
+
+    let cancelled = false;
+    setIsLoadingSymbolSource(true);
+    setSymbolSourceError(null);
+
+    fetch(
+      `${API_URL}/repositories/${job.repositoryId}/symbols/${selectedSymbolId}/source`,
+    )
+      .then(async (response) => {
+        if (!response.ok) {
+          const body = await response.json().catch(() => null);
+          throw new Error(body?.message ?? "Unable to load symbol source.");
+        }
+        return response.json() as Promise<SymbolSourceResponse>;
+      })
+      .then((body) => {
+        if (!cancelled) {
+          setSelectedSymbolSource(body);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setSelectedSymbolSource(null);
+          setSymbolSourceError(
+            err instanceof Error ? err.message : "Unable to load symbol source.",
+          );
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoadingSymbolSource(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [job?.repositoryId, selectedSymbolId]);
+
   async function loadRepositoryArtifacts(repositoryId: string) {
     setIsLoadingSymbols(true);
     setSymbolsError(null);
@@ -835,6 +972,8 @@ export default function Home() {
     setSelectedSymbolId(null);
     setSelectedSymbolDetail(null);
     setSymbolsError(null);
+    setSelectedSymbolSource(null);
+    setSymbolSourceError(null);
     setSymbolQuery("");
     setActiveSymbolTab("references");
     setIsSubmitting(true);
@@ -1460,6 +1599,12 @@ export default function Home() {
                           </pre>
                         ) : null}
                       </div>
+
+                      <SymbolSourcePreview
+                        source={selectedSymbolSource}
+                        isLoading={isLoadingSymbolSource}
+                        error={symbolSourceError}
+                      />
 
                       <div className="grid grid-cols-3 gap-1 rounded-md border border-line bg-cloud p-1">
                         {symbolRelationshipTabs.map((tab) => (
