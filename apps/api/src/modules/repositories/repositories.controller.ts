@@ -5,7 +5,8 @@
   Get,
   NotFoundException,
   Param,
-  Post
+  Post,
+  Query
 } from "@nestjs/common";
 import { db } from "@devlens/database";
 import { CloneJobPayload, RedisQueue } from "@devlens/shared";
@@ -196,6 +197,13 @@ function buildSymbolSourceLines(
       isSymbolLine: lineNumber >= startLine && lineNumber <= endLine
     };
   });
+}
+
+function buildSourceLines(source: string, startLine: number) {
+  return source.split("\n").map((content, index) => ({
+    lineNumber: startLine + index,
+    content
+  }));
 }
 
 const symbolReferenceInclude = {
@@ -423,6 +431,66 @@ export class RepositoriesController {
       repositoryId: id,
       fileCount: files.length,
       nodes
+    };
+  }
+
+  @Get(":id/files/source")
+  async fileSource(@Param("id") id: string, @Query("path") filePath?: string) {
+    const path = filePath?.trim();
+    if (!path) {
+      throw new BadRequestException("File path is required.");
+    }
+
+    const file = await db.repositoryFile.findFirst({
+      where: {
+        repositoryId: id,
+        path
+      },
+      select: {
+        id: true,
+        path: true,
+        language: true,
+        sizeBytes: true,
+        isGenerated: true,
+        isTest: true
+      }
+    });
+
+    if (!file) {
+      throw new NotFoundException("File not found");
+    }
+
+    const chunks = await db.knowledgeChunk.findMany({
+      where: {
+        repositoryId: id,
+        path,
+        chunkKind: "FILE"
+      },
+      orderBy: [{ startLine: "asc" }, { endLine: "asc" }],
+      take: 4,
+      select: {
+        startLine: true,
+        endLine: true,
+        content: true
+      }
+    });
+
+    return {
+      repositoryId: id,
+      file: {
+        id: file.id,
+        path: file.path,
+        language: file.language,
+        sizeBytes: file.sizeBytes,
+        isGenerated: file.isGenerated,
+        isTest: file.isTest,
+        sourceAvailable: chunks.length > 0,
+        previewLines: chunks.flatMap((chunk) =>
+          buildSourceLines(chunk.content, chunk.startLine)
+        ),
+        previewStartLine: chunks[0]?.startLine ?? null,
+        previewEndLine: chunks.at(-1)?.endLine ?? null
+      }
     };
   }
 

@@ -9,7 +9,9 @@ import {
   ChevronDown,
   ChevronRight,
   Clock3,
+  Copy,
   Database,
+  ExternalLink,
   File,
   FileCode2,
   Folder,
@@ -70,6 +72,27 @@ type ExplorerNode = TreeNode & {
   children: ExplorerNode[];
   fileCount: number;
   totalSizeBytes: number;
+};
+
+type FileSourceLine = {
+  lineNumber: number;
+  content: string;
+};
+
+type FileSourceResponse = {
+  repositoryId: string;
+  file: {
+    id: string;
+    path: string;
+    language?: string | null;
+    sizeBytes: number;
+    isGenerated: boolean;
+    isTest: boolean;
+    sourceAvailable: boolean;
+    previewLines: FileSourceLine[];
+    previewStartLine?: number | null;
+    previewEndLine?: number | null;
+  };
 };
 
 type SearchResult = {
@@ -278,6 +301,91 @@ function matchesSymbolQuery(symbol: RepositorySymbol, query: string): boolean {
     symbol.visibility ?? "",
     symbol.signature ?? "",
   ].some((value) => value.toLowerCase().includes(normalizedQuery));
+}
+
+function buildSymbolKindOptions(symbols: RepositorySymbol[]) {
+  const counts = new Map<string, number>();
+  symbols.forEach((symbol) => {
+    counts.set(symbol.kind, (counts.get(symbol.kind) ?? 0) + 1);
+  });
+
+  return [...counts.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([kind, count]) => ({ kind, count }));
+}
+
+function getSymbolKindMeta(kind: string) {
+  const normalized = kind.toLowerCase();
+  const labels: Record<
+    string,
+    { icon: string; singular: string; plural: string; tone: string }
+  > = {
+    function: {
+      icon: "fn",
+      singular: "function",
+      plural: "Functions",
+      tone: "border-blue-200 bg-blue-50 text-blue-700",
+    },
+    interface: {
+      icon: "I",
+      singular: "interface",
+      plural: "Interfaces",
+      tone: "border-emerald-200 bg-emerald-50 text-emerald-700",
+    },
+    type: {
+      icon: "T",
+      singular: "type",
+      plural: "Types",
+      tone: "border-violet-200 bg-violet-50 text-violet-700",
+    },
+    variable: {
+      icon: "x",
+      singular: "variable",
+      plural: "Variables",
+      tone: "border-amber-200 bg-amber-50 text-amber-700",
+    },
+  };
+
+  return (
+    labels[normalized] ?? {
+      icon: "{}",
+      singular: normalized || "symbol",
+      plural: `${kind || "Symbol"}s`,
+      tone: "border-line bg-cloud text-graphite",
+    }
+  );
+}
+
+function getSymbolVisibilityLabel(symbol: {
+  visibility?: string | null;
+}): string {
+  return symbol.visibility ? `${symbol.visibility} ` : "";
+}
+
+function getArticleForWord(word: string): "a" | "an" {
+  return /^[aeiou]/i.test(word) ? "an" : "a";
+}
+
+function formatUsageCount(count: number, label: string): string {
+  return `${count} ${label}${count === 1 ? "" : "s"}`;
+}
+
+function buildSelectedSymbolSummary(symbol: RepositorySymbol): string {
+  const kindMeta = getSymbolKindMeta(symbol.kind);
+  const visibility = getSymbolVisibilityLabel(symbol);
+  const refs = formatUsageCount(symbol.outgoingReferences.length, "reference");
+  const inbound = formatUsageCount(symbol.incomingReferences.length, "inbound link");
+  const article = getArticleForWord(visibility || kindMeta.singular);
+
+  return `${symbol.name} is ${article} ${visibility}${kindMeta.singular} in ${symbol.filePath} with ${refs} and ${inbound}.`;
+}
+
+function getSymbolSourceSnippet(source: SymbolSourceResponse | null): string {
+  return source?.symbol.sourceLines.map((line) => line.content).join("\n") ?? "";
+}
+
+function getFileSourceSnippet(source: FileSourceResponse | null): string {
+  return source?.file.previewLines.map((line) => line.content).join("\n") ?? "";
 }
 
 function formatBytes(bytes: number): string {
@@ -587,54 +695,67 @@ function ExplorerTree({
 function SymbolRelationshipRows({
   items,
   onSelectSymbol,
+  emptyTitle,
+  emptyDescription,
 }: {
   items: SymbolRelation[];
   onSelectSymbol: (symbolId: string) => void;
+  emptyTitle: string;
+  emptyDescription: string;
 }) {
   return (
-    <div className="min-h-0 flex-1 overflow-auto rounded-md border border-line bg-white">
+    <div className="min-h-0 flex-1 overflow-auto rounded-md border border-line bg-white shadow-sm">
       {items.length ? (
         <div className="divide-y divide-line">
-          {items.map((item) => (
-            <button
-              key={item.referenceId}
-              onClick={() => onSelectSymbol(item.symbol.id)}
-              className="grid w-full grid-cols-[minmax(0,1fr)_88px] gap-3 px-3 py-2 text-left transition-colors hover:bg-cloud"
-            >
-              <div className="min-w-0">
-                <div className="flex min-w-0 items-center gap-2">
-                  <p className="truncate text-sm font-medium text-ink">
-                    {item.symbol.name}
-                  </p>
-                  <span className="shrink-0 rounded border border-line bg-cloud px-1.5 py-0.5 text-[11px] font-medium text-graphite">
-                    {item.symbol.kind}
-                  </span>
-                  {item.symbol.visibility ? (
-                    <span className="shrink-0 text-[11px] text-graphite">
-                      {item.symbol.visibility}
+          {items.map((item) => {
+            const kindMeta = getSymbolKindMeta(item.symbol.kind);
+
+            return (
+              <button
+                key={item.referenceId}
+                onClick={() => onSelectSymbol(item.symbol.id)}
+                className="grid w-full grid-cols-[minmax(0,1fr)_96px] gap-3 px-3 py-2.5 text-left transition-colors hover:bg-cloud"
+              >
+                <div className="min-w-0">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <span
+                      className={`grid h-6 w-6 shrink-0 place-items-center rounded border text-[10px] font-semibold ${kindMeta.tone}`}
+                    >
+                      {kindMeta.icon}
                     </span>
-                  ) : null}
+                    <p className="truncate text-sm font-semibold text-ink">
+                      {item.symbol.name}
+                    </p>
+                    {item.symbol.visibility ? (
+                      <span className="shrink-0 rounded bg-cloud px-1.5 py-0.5 text-[11px] text-graphite">
+                        {item.symbol.visibility}
+                      </span>
+                    ) : null}
+                  </div>
+                  <p className="ml-8 mt-1 truncate text-xs text-graphite">
+                    {item.symbol.filePath}
+                  </p>
                 </div>
-                <p className="mt-1 truncate text-xs text-graphite">
-                  {item.symbol.filePath}
-                </p>
-              </div>
-              <div className="flex flex-col items-end justify-center gap-1">
-                <span className="text-xs font-medium text-ink">
-                  {formatCompactLineRange(item.symbol)}
-                </span>
-                <span className="rounded bg-signal/10 px-1.5 py-0.5 text-[11px] font-medium text-signal">
-                  {item.referenceKind.toLowerCase()}
-                </span>
-              </div>
-            </button>
-          ))}
+                <div className="flex flex-col items-end justify-center gap-1">
+                  <span className="text-xs font-semibold text-ink">
+                    {formatCompactLineRange(item.symbol)}
+                  </span>
+                  <span className="rounded bg-signal/10 px-1.5 py-0.5 text-[11px] font-medium text-signal">
+                    {item.referenceKind === "CALL" ? "call" : "reference"}
+                  </span>
+                </div>
+              </button>
+            );
+          })}
         </div>
       ) : (
-        <div className="grid h-full min-h-[112px] place-items-center px-3 py-6 text-center">
-          <span className="rounded-md border border-dashed border-line bg-cloud px-3 py-2 text-sm text-graphite">
-            No linked symbols found.
-          </span>
+        <div className="grid h-full min-h-[132px] place-items-center px-5 py-6 text-center">
+          <div>
+            <p className="text-sm font-semibold text-ink">{emptyTitle}</p>
+            <p className="mt-1 max-w-sm text-sm leading-6 text-graphite">
+              {emptyDescription}
+            </p>
+          </div>
         </div>
       )}
     </div>
@@ -650,9 +771,26 @@ function SymbolSourcePreview({
   isLoading: boolean;
   error: string | null;
 }) {
+  const [copiedAction, setCopiedAction] = useState<"path" | "snippet" | null>(
+    null,
+  );
+  const sourceSnippet = getSymbolSourceSnippet(source);
+  const hasSourceLines = Boolean(sourceSnippet);
+  const sourceLineCount = source?.symbol.sourceLines.length ?? 0;
+  const sourcePreviewHeight = sourceLineCount
+    ? Math.min(260, Math.max(120, sourceLineCount * 24 + 28))
+    : 150;
+
+  async function copyToClipboard(action: "path" | "snippet", value: string) {
+    if (!value) return;
+    await navigator.clipboard.writeText(value);
+    setCopiedAction(action);
+    window.setTimeout(() => setCopiedAction(null), 1400);
+  }
+
   return (
-    <div className="rounded-md border border-line bg-white">
-      <div className="flex items-center justify-between gap-3 border-b border-line px-3 py-2">
+    <div className="rounded-md border border-line bg-white shadow-sm">
+      <div className="flex items-center justify-between gap-3 border-b border-line px-3 py-2.5">
         <div className="min-w-0">
           <p className="text-sm font-semibold text-ink">Source preview</p>
           <p className="truncate text-xs text-graphite">
@@ -661,14 +799,42 @@ function SymbolSourcePreview({
               : "Select a symbol to inspect source lines."}
           </p>
         </div>
-        {source?.symbol.language ? (
-          <span className="shrink-0 rounded bg-cloud px-2 py-1 text-xs font-medium text-graphite">
-            {source.symbol.language}
-          </span>
-        ) : null}
+        <div className="flex shrink-0 items-center gap-2">
+          {source ? (
+            <button
+              type="button"
+              onClick={() => copyToClipboard("path", source.symbol.filePath)}
+              className="inline-flex h-8 items-center gap-1.5 rounded-md border border-line bg-white px-2 text-xs font-medium text-graphite transition-colors hover:border-signal hover:text-ink"
+              title="Copy file path"
+            >
+              <Copy size={13} />
+              {copiedAction === "path" ? "Copied" : "Path"}
+            </button>
+          ) : null}
+          {source ? (
+            <button
+              type="button"
+              onClick={() => copyToClipboard("snippet", sourceSnippet)}
+              disabled={!hasSourceLines}
+              className="inline-flex h-8 items-center gap-1.5 rounded-md border border-line bg-white px-2 text-xs font-medium text-graphite transition-colors hover:border-signal hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+              title="Copy source snippet"
+            >
+              <Copy size={13} />
+              {copiedAction === "snippet" ? "Copied" : "Snippet"}
+            </button>
+          ) : null}
+          {source?.symbol.language ? (
+            <span className="rounded bg-cloud px-2 py-1 text-xs font-medium text-graphite">
+              {source.symbol.language}
+            </span>
+          ) : null}
+        </div>
       </div>
 
-      <div className="h-56 overflow-auto bg-[#0f172a] py-2 text-xs leading-5 text-slate-100">
+      <div
+        className="overflow-auto bg-[#0f172a] py-3 text-[13px] leading-6 text-slate-100"
+        style={{ height: sourcePreviewHeight }}
+      >
         {isLoading ? (
           <div className="grid h-full place-items-center text-slate-300">
             <span className="inline-flex items-center gap-2">
@@ -685,11 +851,13 @@ function SymbolSourcePreview({
             {source.symbol.sourceLines.map((line) => (
               <div
                 key={line.lineNumber}
-                className={`grid grid-cols-[56px_1fr] px-3 ${
-                  line.isSymbolLine ? "bg-signal/10" : ""
+                className={`grid grid-cols-[64px_1fr] px-3 ${
+                  line.isSymbolLine
+                    ? "border-l-2 border-signal bg-signal/15"
+                    : "border-l-2 border-transparent"
                 }`}
               >
-                <span className="select-none pr-4 text-right text-slate-500">
+                <span className="select-none pr-5 text-right text-slate-500">
                   {line.lineNumber}
                 </span>
                 <code className="whitespace-pre-wrap break-words">
@@ -700,9 +868,751 @@ function SymbolSourcePreview({
           </pre>
         ) : (
           <div className="grid h-full place-items-center px-4 text-center text-slate-300">
-            Source preview is not available for this symbol.
+            No indexed source chunk is available yet. Symbol relationships and
+            metadata can still be inspected below.
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+function FileSourcePreview({
+  repositoryReady,
+  selectedNode,
+  source,
+  isLoading,
+  error,
+}: {
+  repositoryReady: boolean;
+  selectedNode: ExplorerNode | null;
+  source: FileSourceResponse | null;
+  isLoading: boolean;
+  error: string | null;
+}) {
+  const [copiedAction, setCopiedAction] = useState<"path" | "snippet" | null>(
+    null,
+  );
+  const sourceSnippet = getFileSourceSnippet(source);
+  const hasSourceLines = Boolean(sourceSnippet);
+  const sourceLineCount = source?.file.previewLines.length ?? 0;
+  const sourcePreviewHeight = sourceLineCount
+    ? Math.min(360, Math.max(180, sourceLineCount * 24 + 28))
+    : 220;
+
+  async function copyToClipboard(action: "path" | "snippet", value: string) {
+    if (!value) return;
+    await navigator.clipboard.writeText(value);
+    setCopiedAction(action);
+    window.setTimeout(() => setCopiedAction(null), 1400);
+  }
+
+  if (!repositoryReady) {
+    return (
+      <div className="grid h-full place-items-center rounded-md border border-line bg-white p-6 text-center">
+        <div>
+          <FileCode2 className="mx-auto mb-3 text-signal" />
+          <p className="font-semibold">Analyze a repository first</p>
+          <p className="mt-2 max-w-md text-sm leading-6 text-graphite">
+            File previews become available after DevLens indexes repository
+            files and source chunks.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!selectedNode) {
+    return (
+      <div className="grid h-full place-items-center rounded-md border border-line bg-white p-6 text-center">
+        <div>
+          <FileCode2 className="mx-auto mb-3 text-signal" />
+          <p className="font-semibold">Select a file</p>
+          <p className="mt-2 max-w-md text-sm leading-6 text-graphite">
+            Choose a file from the explorer to inspect metadata and indexed
+            source preview.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (selectedNode.kind === "folder") {
+    return (
+      <div className="grid h-full place-items-center rounded-md border border-line bg-white p-6 text-center">
+        <div>
+          <FolderOpen className="mx-auto mb-3 text-amber" />
+          <p className="font-semibold">{selectedNode.path}</p>
+          <p className="mt-2 max-w-md text-sm leading-6 text-graphite">
+            This folder contains {selectedNode.fileCount} files totaling{" "}
+            {formatBytes(selectedNode.totalSizeBytes)}. Select a file inside it
+            to preview source.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex h-full min-h-0 flex-col rounded-md border border-line bg-white shadow-sm">
+      <div className="border-b border-line px-4 py-3">
+        <div className="flex min-w-0 items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="truncate font-semibold text-ink" title={selectedNode.path}>
+              {selectedNode.name}
+            </p>
+            <p className="mt-1 truncate text-sm text-graphite">
+              {selectedNode.path}
+            </p>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <button
+              type="button"
+              onClick={() => copyToClipboard("path", selectedNode.path)}
+              className="inline-flex h-8 items-center gap-1.5 rounded-md border border-line bg-white px-2 text-xs font-medium text-graphite transition-colors hover:border-signal hover:text-ink"
+            >
+              <Copy size={13} />
+              {copiedAction === "path" ? "Copied" : "Path"}
+            </button>
+            <button
+              type="button"
+              onClick={() => copyToClipboard("snippet", sourceSnippet)}
+              disabled={!hasSourceLines}
+              className="inline-flex h-8 items-center gap-1.5 rounded-md border border-line bg-white px-2 text-xs font-medium text-graphite transition-colors hover:border-signal hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Copy size={13} />
+              {copiedAction === "snippet" ? "Copied" : "Snippet"}
+            </button>
+          </div>
+        </div>
+
+        <div className="mt-3 grid grid-cols-3 gap-2 text-sm">
+          <div className="rounded-md border border-line bg-cloud px-3 py-2">
+            <p className="text-xs text-graphite">Language</p>
+            <p className="mt-0.5 truncate font-medium text-ink">
+              {source?.file.language ?? selectedNode.language ?? "Unknown"}
+            </p>
+          </div>
+          <div className="rounded-md border border-line bg-cloud px-3 py-2">
+            <p className="text-xs text-graphite">Size</p>
+            <p className="mt-0.5 font-medium text-ink">
+              {formatBytes(source?.file.sizeBytes ?? selectedNode.sizeBytes ?? 0)}
+            </p>
+          </div>
+          <div className="rounded-md border border-line bg-cloud px-3 py-2">
+            <p className="text-xs text-graphite">Type</p>
+            <p className="mt-0.5 truncate font-medium text-ink">
+              {source?.file.isTest
+                ? "Test file"
+                : source?.file.isGenerated
+                  ? "Generated file"
+                  : "Repository file"}
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-auto p-4">
+        {isLoading ? (
+          <div className="grid h-full min-h-[260px] place-items-center text-sm text-graphite">
+            <span className="inline-flex items-center gap-2">
+              <Loader2 size={16} className="animate-spin" />
+              Loading preview
+            </span>
+          </div>
+        ) : error ? (
+          <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm leading-6 text-red-700">
+            {error}
+          </div>
+        ) : source?.file.previewLines.length ? (
+          <div className="overflow-hidden rounded-md border border-line">
+            <div className="flex items-center justify-between border-b border-line bg-cloud px-3 py-2">
+              <p className="text-sm font-semibold text-ink">Indexed preview</p>
+              <span className="text-xs font-medium text-graphite">
+                Lines {source.file.previewStartLine}-{source.file.previewEndLine}
+              </span>
+            </div>
+            <div
+              className="overflow-auto bg-[#0f172a] py-3 text-[13px] leading-6 text-slate-100"
+              style={{ height: sourcePreviewHeight }}
+            >
+              <pre className="font-mono">
+                {source.file.previewLines.map((line) => (
+                  <div
+                    key={`${line.lineNumber}-${line.content}`}
+                    className="grid grid-cols-[64px_1fr] border-l-2 border-transparent px-3"
+                  >
+                    <span className="select-none pr-5 text-right text-slate-500">
+                      {line.lineNumber}
+                    </span>
+                    <code className="whitespace-pre-wrap break-words">
+                      {line.content || " "}
+                    </code>
+                  </div>
+                ))}
+              </pre>
+            </div>
+          </div>
+        ) : (
+          <div className="grid min-h-[260px] place-items-center rounded-md border border-dashed border-line bg-cloud p-6 text-center">
+            <div>
+              <FileCode2 className="mx-auto mb-3 text-signal" />
+              <p className="font-semibold text-ink">No indexed preview yet</p>
+              <p className="mt-2 max-w-md text-sm leading-6 text-graphite">
+                DevLens has file metadata for this path, but no source chunk was
+                indexed for preview.
+              </p>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function SymbolGraphNode({
+  symbol,
+  helper,
+  metric,
+  onClick,
+}: {
+  symbol: SymbolRelation["symbol"] | RepositorySymbol;
+  helper?: string;
+  metric?: string;
+  onClick?: () => void;
+}) {
+  const kindMeta = getSymbolKindMeta(symbol.kind);
+  const content = (
+    <>
+      <div className="flex min-w-0 items-center gap-2">
+        <span
+          className={`grid h-6 w-6 shrink-0 place-items-center rounded border text-[10px] font-semibold ${kindMeta.tone}`}
+        >
+          {kindMeta.icon}
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-semibold text-ink">
+            {symbol.name}
+          </p>
+          <p className="truncate text-xs text-graphite">
+            {kindMeta.singular}
+            {symbol.visibility ? ` • ${symbol.visibility}` : ""}
+          </p>
+        </div>
+        {metric ? (
+          <span className="shrink-0 rounded bg-cloud px-1.5 py-0.5 text-[11px] font-semibold text-graphite">
+            {metric}
+          </span>
+        ) : null}
+      </div>
+      <p className="mt-2 truncate text-xs text-graphite">
+        {symbol.filePath} • {formatCompactLineRange(symbol)}
+      </p>
+      {helper ? <p className="mt-1 text-xs text-graphite">{helper}</p> : null}
+    </>
+  );
+
+  if (!onClick) {
+    return (
+      <div className="rounded-md border border-signal/40 bg-signal/5 p-3 shadow-sm">
+        {content}
+      </div>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="w-full rounded-md border border-line bg-white p-3 text-left transition-colors hover:border-signal hover:bg-cloud"
+    >
+      {content}
+    </button>
+  );
+}
+
+function SymbolGraphGroup({
+  title,
+  description,
+  items,
+  emptyText,
+  onSelectSymbol,
+}: {
+  title: string;
+  description: string;
+  items: SymbolRelation[];
+  emptyText: string;
+  onSelectSymbol: (symbolId: string) => void;
+}) {
+  return (
+    <div className="min-h-0 rounded-md border border-line bg-white p-3 shadow-sm">
+      <div className="mb-3 flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-sm font-semibold text-ink">{title}</p>
+          <p className="mt-0.5 text-xs leading-5 text-graphite">
+            {description}
+          </p>
+        </div>
+        <span className="shrink-0 rounded bg-cloud px-2 py-1 text-xs font-semibold text-graphite">
+          {items.length}
+        </span>
+      </div>
+      {items.length ? (
+        <div className="grid max-h-56 gap-2 overflow-auto pr-1">
+          {items.map((item) => (
+            <SymbolGraphNode
+              key={item.referenceId}
+              symbol={item.symbol}
+              helper={
+                item.referenceKind === "CALL"
+                  ? "Called by the focused symbol"
+                  : "Linked symbol"
+              }
+              onClick={() => onSelectSymbol(item.symbol.id)}
+            />
+          ))}
+        </div>
+      ) : (
+        <div className="grid min-h-[104px] place-items-center rounded-md border border-dashed border-line bg-cloud px-3 py-5 text-center text-sm leading-6 text-graphite">
+          {emptyText}
+        </div>
+      )}
+    </div>
+  );
+}
+
+type SymbolGraphNodePlacement = {
+  id: string;
+  relation: "calls" | "references" | "inbound";
+  relationLabel: string;
+  symbol: SymbolRelation["symbol"];
+  x: number;
+  y: number;
+};
+
+function buildGraphPlacements(focusedSymbol: RepositorySymbol) {
+  const visibleCalls = focusedSymbol.outgoingCalls.slice(0, 3);
+  const visibleReferences = focusedSymbol.outgoingReferences.slice(0, 4);
+  const visibleInbound = focusedSymbol.incomingReferences.slice(0, 3);
+
+  const distribute = (count: number, start: number, gap: number) =>
+    Array.from({ length: count }, (_, index) => start + index * gap);
+
+  const placements: SymbolGraphNodePlacement[] = [
+    ...visibleInbound.map((item, index) => ({
+      id: item.referenceId,
+      relation: "inbound" as const,
+      relationLabel: "Inbound",
+      symbol: item.symbol,
+      x: 42,
+      y: distribute(visibleInbound.length, 84, 104)[index] ?? 84,
+    })),
+    ...visibleCalls.map((item, index) => ({
+      id: item.referenceId,
+      relation: "calls" as const,
+      relationLabel: "Call",
+      symbol: item.symbol,
+      x: 690,
+      y: distribute(visibleCalls.length, 84, 104)[index] ?? 84,
+    })),
+    ...visibleReferences.map((item, index) => ({
+      id: item.referenceId,
+      relation: "references" as const,
+      relationLabel: "Reference",
+      symbol: item.symbol,
+      x: 180 + index * 150,
+      y: 320,
+    })),
+  ];
+
+  return {
+    placements,
+    hidden: {
+      calls: Math.max(0, focusedSymbol.outgoingCalls.length - visibleCalls.length),
+      references: Math.max(
+        0,
+        focusedSymbol.outgoingReferences.length - visibleReferences.length,
+      ),
+      inbound: Math.max(
+        0,
+        focusedSymbol.incomingReferences.length - visibleInbound.length,
+      ),
+    },
+  };
+}
+
+function getGraphEdgeTone(relation: SymbolGraphNodePlacement["relation"]) {
+  if (relation === "calls") {
+    return { stroke: "#2563eb", fill: "#2563eb", label: "Calls" };
+  }
+  if (relation === "references") {
+    return { stroke: "#7c3aed", fill: "#7c3aed", label: "References" };
+  }
+  return { stroke: "#059669", fill: "#059669", label: "Inbound" };
+}
+
+function getGraphPath(node: SymbolGraphNodePlacement) {
+  const center = {
+    x: 480,
+    y: 184,
+  };
+  const target = {
+    x: node.x + 110,
+    y: node.y + 38,
+  };
+
+  if (node.relation === "inbound") {
+    const startX = node.x + 220;
+    const startY = node.y + 38;
+    return `M ${startX} ${startY} C ${startX + 70} ${startY}, ${
+      center.x - 110
+    } ${center.y}, ${center.x - 110} ${center.y}`;
+  }
+
+  if (node.relation === "calls") {
+    const startX = center.x + 110;
+    return `M ${startX} ${center.y} C ${startX + 70} ${center.y}, ${
+      node.x - 70
+    } ${target.y}, ${node.x} ${target.y}`;
+  }
+
+  const startY = center.y + 56;
+  return `M ${center.x} ${startY} C ${center.x} ${startY + 52}, ${
+    target.x
+  } ${node.y - 52}, ${target.x} ${node.y}`;
+}
+
+function SymbolGraphCanvasNode({
+  symbol,
+  relationLabel,
+  isFocused,
+  onClick,
+}: {
+  symbol: SymbolRelation["symbol"] | RepositorySymbol;
+  relationLabel?: string;
+  isFocused?: boolean;
+  onClick?: () => void;
+}) {
+  const kindMeta = getSymbolKindMeta(symbol.kind);
+  const body = (
+    <>
+      <div className="flex min-w-0 items-center gap-2">
+        <span
+          className={`grid h-6 w-6 shrink-0 place-items-center rounded border text-[10px] font-semibold ${kindMeta.tone}`}
+        >
+          {kindMeta.icon}
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-semibold text-ink">
+            {symbol.name}
+          </p>
+          <p className="truncate text-xs text-graphite">
+            {kindMeta.singular}
+            {symbol.visibility ? ` • ${symbol.visibility}` : ""}
+          </p>
+        </div>
+      </div>
+      <p className="mt-2 truncate text-xs text-graphite">
+        {symbol.filePath} • {formatCompactLineRange(symbol)}
+      </p>
+      {relationLabel ? (
+        <span className="mt-2 inline-flex rounded bg-cloud px-1.5 py-0.5 text-[11px] font-semibold text-graphite">
+          {relationLabel}
+        </span>
+      ) : null}
+    </>
+  );
+
+  const className = `h-full w-full rounded-lg border p-3 text-left shadow-sm transition-colors ${
+    isFocused
+      ? "border-signal bg-white shadow-[0_12px_32px_rgba(37,99,235,0.16)]"
+      : "border-line bg-white hover:border-signal hover:bg-cloud"
+  }`;
+
+  if (!onClick) {
+    return <div className={className}>{body}</div>;
+  }
+
+  return (
+    <button type="button" onClick={onClick} className={className}>
+      {body}
+    </button>
+  );
+}
+
+function SymbolGraphCanvas({
+  focusedSymbol,
+  relationshipCount,
+  onSelectSymbol,
+}: {
+  focusedSymbol: RepositorySymbol;
+  relationshipCount: number;
+  onSelectSymbol: (symbolId: string) => void;
+}) {
+  const { placements, hidden } = buildGraphPlacements(focusedSymbol);
+  const hiddenTotal = hidden.calls + hidden.references + hidden.inbound;
+
+  return (
+    <div className="rounded-md border border-line bg-white p-4 shadow-sm">
+      <div className="mb-3 flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="font-semibold text-ink">Relationship map</p>
+          <p className="mt-1 text-sm leading-6 text-graphite">
+            Directional symbol links around the current focus.
+          </p>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          {[
+            ["Calls", "#2563eb"],
+            ["References", "#7c3aed"],
+            ["Inbound", "#059669"],
+          ].map(([label, color]) => (
+            <span
+              key={label}
+              className="inline-flex items-center gap-1.5 text-xs font-medium text-graphite"
+            >
+              <span
+                className="h-2 w-2 rounded-full"
+                style={{ backgroundColor: color }}
+              />
+              {label}
+            </span>
+          ))}
+        </div>
+      </div>
+
+      <div className="relative h-[430px] overflow-hidden rounded-md border border-line bg-cloud">
+        <svg
+          className="absolute inset-0 h-full w-full"
+          viewBox="0 0 960 430"
+          role="img"
+          aria-label="Symbol relationship graph"
+        >
+          <defs>
+            {(["calls", "references", "inbound"] as const).map((relation) => {
+              const tone = getGraphEdgeTone(relation);
+              return (
+                <marker
+                  key={relation}
+                  id={`arrow-${relation}`}
+                  markerWidth="8"
+                  markerHeight="8"
+                  refX="7"
+                  refY="4"
+                  orient="auto"
+                  markerUnits="strokeWidth"
+                >
+                  <path d="M 0 0 L 8 4 L 0 8 z" fill={tone.fill} />
+                </marker>
+              );
+            })}
+          </defs>
+          <rect width="960" height="430" fill="transparent" />
+          {placements.map((node) => {
+            const tone = getGraphEdgeTone(node.relation);
+            return (
+              <path
+                key={node.id}
+                d={getGraphPath(node)}
+                fill="none"
+                stroke={tone.stroke}
+                strokeOpacity="0.62"
+                strokeWidth="2"
+                markerEnd={`url(#arrow-${node.relation})`}
+              />
+            );
+          })}
+        </svg>
+
+        <div className="absolute left-[38.5%] top-[33%] h-[112px] w-[230px]">
+          <SymbolGraphCanvasNode
+            symbol={focusedSymbol}
+            isFocused
+            relationLabel={formatUsageCount(relationshipCount, "link")}
+          />
+        </div>
+
+        {placements.map((node) => (
+          <div
+            key={node.id}
+            className="absolute h-[82px] w-[220px]"
+            style={{ left: node.x, top: node.y }}
+          >
+            <SymbolGraphCanvasNode
+              symbol={node.symbol}
+              relationLabel={node.relationLabel}
+              onClick={() => onSelectSymbol(node.symbol.id)}
+            />
+          </div>
+        ))}
+
+        {hiddenTotal ? (
+          <div className="absolute bottom-3 right-3 rounded-md border border-line bg-white px-3 py-2 text-xs font-semibold text-graphite shadow-sm">
+            +{hiddenTotal} more relationships in lists below
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function SymbolGraphPanel({
+  repositoryReady,
+  symbolsResponse,
+  focusedSymbol,
+  onSelectSymbol,
+  onInspectSymbol,
+  onOpenInFiles,
+}: {
+  repositoryReady: boolean;
+  symbolsResponse: SymbolsResponse | null;
+  focusedSymbol: RepositorySymbol | null;
+  onSelectSymbol: (symbolId: string) => void;
+  onInspectSymbol: (symbolId: string) => void;
+  onOpenInFiles: (symbol: RepositorySymbol) => void;
+}) {
+  const relationshipCount = focusedSymbol
+    ? focusedSymbol.outgoingCalls.length +
+      focusedSymbol.outgoingReferences.length +
+      focusedSymbol.incomingReferences.length
+    : 0;
+
+  return (
+    <div className="rounded-md border border-line bg-white">
+      <div className="border-b border-line px-4 py-3">
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <p className="font-semibold">Symbol graph</p>
+            <p className="text-sm text-graphite">
+              {symbolsResponse?.count
+                ? `${symbolsResponse.count} symbols available for relationship mapping.`
+                : "Explore calls, references, and inbound symbol links."}
+            </p>
+          </div>
+          <Network size={18} className="shrink-0 text-signal" />
+        </div>
+      </div>
+
+      <div className="h-[640px] overflow-auto bg-cloud/50 p-4">
+        {!repositoryReady ? (
+          <div className="grid h-full place-items-center rounded-md border border-line bg-white p-6 text-center">
+            <div>
+              <Network className="mx-auto mb-3 text-signal" />
+              <p className="font-semibold">Analyze a repository first</p>
+              <p className="mt-2 max-w-md text-sm leading-6 text-graphite">
+                The graph uses extracted symbols and relationships from a
+                completed analysis.
+              </p>
+            </div>
+          </div>
+        ) : !symbolsResponse?.symbols.length ? (
+          <div className="grid h-full place-items-center rounded-md border border-line bg-white p-6 text-center">
+            <div>
+              <Braces className="mx-auto mb-3 text-signal" />
+              <p className="font-semibold">No symbol graph available</p>
+              <p className="mt-2 max-w-md text-sm leading-6 text-graphite">
+                No parser-backed symbols were extracted for this repository.
+              </p>
+            </div>
+          </div>
+        ) : focusedSymbol ? (
+          <div className="grid min-h-full gap-4">
+            {relationshipCount ? (
+              <SymbolGraphCanvas
+                focusedSymbol={focusedSymbol}
+                relationshipCount={relationshipCount}
+                onSelectSymbol={onSelectSymbol}
+              />
+            ) : (
+              <div className="grid min-h-[320px] place-items-center rounded-md border border-line bg-white p-6 text-center shadow-sm">
+                <div>
+                  <Network className="mx-auto mb-3 text-signal" />
+                  <p className="font-semibold text-ink">
+                    No relationships for this symbol
+                  </p>
+                  <p className="mt-2 max-w-md text-sm leading-6 text-graphite">
+                    DevLens indexed this symbol, but it does not currently have
+                    calls, references, or inbound links in the graph data.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            <div className="grid grid-cols-[minmax(0,1fr)_280px] gap-4">
+              <div className="rounded-md border border-line bg-white p-4 shadow-sm">
+                <div className="flex min-w-0 items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-graphite">
+                      Focused symbol
+                    </p>
+                    <p className="mt-1 text-sm leading-6 text-ink">
+                      {buildSelectedSymbolSummary(focusedSymbol)}
+                    </p>
+                  </div>
+                  <span className="shrink-0 rounded bg-signal/10 px-2 py-1 text-xs font-semibold text-signal">
+                    {formatUsageCount(relationshipCount, "link")}
+                  </span>
+                </div>
+                <div className="mt-3">
+                  <SymbolGraphNode
+                    symbol={focusedSymbol}
+                    metric={formatLineRange(focusedSymbol)}
+                  />
+                </div>
+              </div>
+
+              <div className="rounded-md border border-line bg-white p-4 shadow-sm">
+                <p className="text-sm font-semibold text-ink">Actions</p>
+                <p className="mt-1 text-sm leading-6 text-graphite">
+                  Keep exploring in the graph, inspect relationships in
+                  Symbols, or jump to the file.
+                </p>
+                <div className="mt-3 grid gap-2">
+                  <button
+                    type="button"
+                    onClick={() => onInspectSymbol(focusedSymbol.id)}
+                    className="inline-flex h-9 items-center justify-center gap-2 rounded-md bg-ink px-3 text-sm font-semibold text-white"
+                  >
+                    <Braces size={15} />
+                    Inspect in Symbols
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onOpenInFiles(focusedSymbol)}
+                    className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-line bg-white px-3 text-sm font-medium text-graphite transition-colors hover:border-signal hover:text-ink"
+                  >
+                    <ExternalLink size={15} />
+                    Open in Files
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-3 gap-4">
+              <SymbolGraphGroup
+                title="Calls"
+                description="Symbols called by the focused symbol."
+                items={focusedSymbol.outgoingCalls}
+                emptyText="No calls found from this symbol."
+                onSelectSymbol={onSelectSymbol}
+              />
+              <SymbolGraphGroup
+                title="References"
+                description="Symbols referenced by the focused symbol."
+                items={focusedSymbol.outgoingReferences}
+                emptyText="No outgoing references found."
+                onSelectSymbol={onSelectSymbol}
+              />
+              <SymbolGraphGroup
+                title="Inbound"
+                description="Symbols that point back to the focus."
+                items={focusedSymbol.incomingReferences}
+                emptyText="No inbound links found."
+                onSelectSymbol={onSelectSymbol}
+              />
+            </div>
+          </div>
+        ) : null}
       </div>
     </div>
   );
@@ -716,6 +1626,10 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [selectedNode, setSelectedNode] = useState<ExplorerNode | null>(null);
+  const [selectedFileSource, setSelectedFileSource] =
+    useState<FileSourceResponse | null>(null);
+  const [isLoadingFileSource, setIsLoadingFileSource] = useState(false);
+  const [fileSourceError, setFileSourceError] = useState<string | null>(null);
   const [fileQuery, setFileQuery] = useState("");
   const [languageFilter, setLanguageFilter] = useState("all");
   const [searchQuery, setSearchQuery] = useState("function");
@@ -740,6 +1654,7 @@ export default function Home() {
     null,
   );
   const [symbolQuery, setSymbolQuery] = useState("");
+  const [symbolKindFilter, setSymbolKindFilter] = useState("all");
   const [activeSymbolTab, setActiveSymbolTab] =
     useState<SymbolRelationshipTab>("references");
   const [activeWorkspaceTab, setActiveWorkspaceTab] =
@@ -766,16 +1681,23 @@ export default function Home() {
     selectedSymbolDetail ??
     symbolsResponse?.symbols.find((symbol) => symbol.id === selectedSymbolId) ??
     null;
+  const graphFocusedSymbol = selectedSymbol ?? symbolsResponse?.symbols[0] ?? null;
   const symbolOccurrenceLabels = useMemo(
     () => buildSymbolOccurrenceLabels(symbolsResponse?.symbols ?? []),
     [symbolsResponse],
   );
+  const symbolKindOptions = useMemo(
+    () => buildSymbolKindOptions(symbolsResponse?.symbols ?? []),
+    [symbolsResponse],
+  );
   const filteredSymbols = useMemo(
     () =>
-      (symbolsResponse?.symbols ?? []).filter((symbol) =>
-        matchesSymbolQuery(symbol, symbolQuery),
+      (symbolsResponse?.symbols ?? []).filter(
+        (symbol) =>
+          (symbolKindFilter === "all" || symbol.kind === symbolKindFilter) &&
+          matchesSymbolQuery(symbol, symbolQuery),
       ),
-    [symbolsResponse, symbolQuery],
+    [symbolsResponse, symbolKindFilter, symbolQuery],
   );
   const activeSymbolRelations = selectedSymbol
     ? activeSymbolTab === "calls"
@@ -796,7 +1718,7 @@ export default function Home() {
     },
     {
       key: "references",
-      label: "Refs",
+      label: "References",
       count: selectedSymbol?.outgoingReferences.length ?? 0,
     },
     {
@@ -805,6 +1727,24 @@ export default function Home() {
       count: selectedSymbol?.incomingReferences.length ?? 0,
     },
   ];
+  const activeRelationshipEmptyState =
+    activeSymbolTab === "calls"
+      ? {
+          title: "No calls from this symbol",
+          description:
+            "This symbol does not call another indexed symbol in the current analysis.",
+        }
+      : activeSymbolTab === "references"
+        ? {
+            title: "No outgoing references",
+            description:
+              "DevLens did not find other indexed symbols referenced from this symbol.",
+          }
+        : {
+            title: "No inbound links",
+            description:
+              "No indexed symbols currently point back to this symbol.",
+          };
 
   useEffect(() => {
     if (explorerTree.length) {
@@ -928,6 +1868,57 @@ export default function Home() {
     };
   }, [job?.repositoryId, selectedSymbolId]);
 
+  useEffect(() => {
+    if (
+      !repositoryReady ||
+      !job?.repositoryId ||
+      !selectedNode ||
+      selectedNode.kind !== "file"
+    ) {
+      setSelectedFileSource(null);
+      setFileSourceError(null);
+      setIsLoadingFileSource(false);
+      return;
+    }
+
+    let cancelled = false;
+    setIsLoadingFileSource(true);
+    setFileSourceError(null);
+
+    fetch(
+      `${API_URL}/repositories/${job.repositoryId}/files/source?path=${encodeURIComponent(
+        selectedNode.path,
+      )}`,
+    )
+      .then(async (response) => {
+        if (!response.ok) {
+          const body = await response.json().catch(() => null);
+          throw new Error(body?.message ?? "Unable to load file preview.");
+        }
+        return response.json() as Promise<FileSourceResponse>;
+      })
+      .then((body) => {
+        if (!cancelled) {
+          setSelectedFileSource(body);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setSelectedFileSource(null);
+          setFileSourceError(
+            err instanceof Error ? err.message : "Unable to load file preview.",
+          );
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoadingFileSource(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [job?.repositoryId, repositoryReady, selectedNode]);
+
   async function loadRepositoryArtifacts(repositoryId: string) {
     setIsLoadingSymbols(true);
     setSymbolsError(null);
@@ -968,6 +1959,9 @@ export default function Home() {
     setExpanded(new Set());
     setSearchResponse(null);
     setSearchError(null);
+    setSelectedFileSource(null);
+    setFileSourceError(null);
+    setIsLoadingFileSource(false);
     setSymbolsResponse(null);
     setSelectedSymbolId(null);
     setSelectedSymbolDetail(null);
@@ -975,6 +1969,7 @@ export default function Home() {
     setSelectedSymbolSource(null);
     setSymbolSourceError(null);
     setSymbolQuery("");
+    setSymbolKindFilter("all");
     setActiveSymbolTab("references");
     setIsSubmitting(true);
 
@@ -1057,6 +2052,18 @@ export default function Home() {
     if (node) setSelectedNode(node);
   }
 
+  function focusSymbolFile(symbol: RepositorySymbol) {
+    setFileQuery(symbol.filePath);
+    setLanguageFilter("all");
+    setExpanded((current) => {
+      const next = new Set(current);
+      getParentPaths(symbol.filePath).forEach((path) => next.add(path));
+      return next;
+    });
+    const node = findExplorerNode(explorerTree, symbol.filePath);
+    if (node) setSelectedNode(node);
+  }
+
   function selectSymbol(symbolId: string) {
     const symbol =
       symbolsResponse?.symbols.find((item) => item.id === symbolId) ??
@@ -1064,16 +2071,18 @@ export default function Home() {
     setSelectedSymbolId(symbolId);
 
     if (symbol) {
-      setFileQuery(symbol.filePath);
-      setLanguageFilter("all");
-      setExpanded((current) => {
-        const next = new Set(current);
-        getParentPaths(symbol.filePath).forEach((path) => next.add(path));
-        return next;
-      });
-      const node = findExplorerNode(explorerTree, symbol.filePath);
-      if (node) setSelectedNode(node);
+      focusSymbolFile(symbol);
     }
+  }
+
+  function openSymbolInFiles(symbol: RepositorySymbol) {
+    focusSymbolFile(symbol);
+    setActiveWorkspaceTab("files");
+  }
+
+  function inspectSymbol(symbolId: string) {
+    selectSymbol(symbolId);
+    setActiveWorkspaceTab("symbols");
   }
 
   const activeStepIndex = getStepIndex(job?.currentStep);
@@ -1356,8 +2365,8 @@ export default function Home() {
                   </select>
                 </div>
               </div>
-              <div className="flex h-[560px] flex-col">
-                <div className="min-h-0 flex-1 overflow-auto bg-white p-3">
+              <div className="grid h-[640px] grid-cols-[360px_1fr]">
+                <div className="min-h-0 overflow-auto border-r border-line bg-white p-3">
                   {visibleTree.length ? (
                     <ExplorerTree
                       nodes={visibleTree}
@@ -1376,68 +2385,14 @@ export default function Home() {
                     </div>
                   )}
                 </div>
-                <div className="border-t border-line bg-cloud/50 p-4 text-sm">
-                  <p className="font-semibold">Structure Details</p>
-                  {selectedNode ? (
-                    <div className="mt-3 space-y-4 text-graphite">
-                      <div className="rounded-md border border-line bg-white p-3">
-                        <p className="text-xs uppercase tracking-wide text-graphite">
-                          Selected {selectedNode.kind}
-                        </p>
-                        <p className="mt-1 break-all font-medium text-ink">
-                          {selectedNode.path}
-                        </p>
-                      </div>
-                      <div className="grid grid-cols-2 gap-2">
-                        <div className="rounded-md border border-line bg-white p-3">
-                          <p className="text-xs uppercase tracking-wide">
-                            Files
-                          </p>
-                          <p className="mt-1 font-semibold text-ink">
-                            {selectedNode.fileCount}
-                          </p>
-                        </div>
-                        <div className="rounded-md border border-line bg-white p-3">
-                          <p className="text-xs uppercase tracking-wide">
-                            Size
-                          </p>
-                          <p className="mt-1 font-semibold text-ink">
-                            {formatBytes(
-                              selectedNode.totalSizeBytes ||
-                                selectedNode.sizeBytes ||
-                                0,
-                            )}
-                          </p>
-                        </div>
-                      </div>
-                      <div className="rounded-md border border-line bg-white p-3">
-                        <p className="text-xs uppercase tracking-wide">Type</p>
-                        <p className="mt-1 text-ink">
-                          {selectedNode.kind === "folder"
-                            ? "Folder grouping related source files"
-                            : selectedNode.language
-                              ? `${selectedNode.language} source file`
-                              : "Repository file"}
-                        </p>
-                      </div>
-                      {selectedNode.kind === "folder" ? (
-                        <p className="leading-6">
-                          Expand folders to trace how the repository is
-                          organized before moving into symbols and dependencies.
-                        </p>
-                      ) : (
-                        <p className="leading-6">
-                          Code preview and symbol extraction will attach here in
-                          the next milestone.
-                        </p>
-                      )}
-                    </div>
-                  ) : (
-                    <p className="mt-3 leading-6 text-graphite">
-                      Select a folder or file to understand what role it plays
-                      in the repository structure.
-                    </p>
-                  )}
+                <div className="min-h-0 bg-cloud/50 p-4">
+                  <FileSourcePreview
+                    repositoryReady={repositoryReady}
+                    selectedNode={selectedNode}
+                    source={selectedFileSource}
+                    isLoading={isLoadingFileSource}
+                    error={fileSourceError}
+                  />
                 </div>
               </div>
             </div>
@@ -1462,8 +2417,8 @@ export default function Home() {
               </div>
 
               <div className="grid h-[640px] grid-cols-[360px_1fr]">
-                <div className="min-h-0 border-r border-line p-3">
-                  <div className="mb-3 flex h-9 items-center gap-2 rounded-md border border-line bg-cloud px-3 focus-within:border-signal">
+                <div className="flex min-h-0 flex-col border-r border-line p-3">
+                  <div className="mb-3 flex h-9 shrink-0 items-center gap-2 rounded-md border border-line bg-cloud px-3 focus-within:border-signal">
                     <Search size={14} className="shrink-0 text-graphite" />
                     <input
                       value={symbolQuery}
@@ -1476,77 +2431,124 @@ export default function Home() {
                     />
                   </div>
 
+                  {symbolKindOptions.length ? (
+                    <div className="relative mb-3 shrink-0">
+                      <div className="pointer-events-none absolute inset-y-0 left-0 z-10 w-3 bg-gradient-to-r from-white to-transparent" />
+                      <div className="pointer-events-none absolute inset-y-0 right-0 z-10 w-5 bg-gradient-to-l from-white to-transparent" />
+                      <div className="flex gap-1.5 overflow-x-auto pb-0.5 pr-4 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                        <button
+                          type="button"
+                          onClick={() => setSymbolKindFilter("all")}
+                          className={`inline-flex shrink-0 items-center gap-1.5 rounded-md border px-2 py-1 text-xs font-semibold transition-colors ${
+                            symbolKindFilter === "all"
+                              ? "border-signal bg-signal/10 text-ink"
+                              : "border-line bg-white text-graphite hover:border-signal hover:text-ink"
+                          }`}
+                        >
+                          <span>All</span>
+                          <span className="rounded bg-white/80 px-1.5 py-0.5 text-[11px] tabular-nums">
+                            {symbolsResponse?.count ?? 0}
+                          </span>
+                        </button>
+                        {symbolKindOptions.map((option) => {
+                          const kindMeta = getSymbolKindMeta(option.kind);
+
+                          return (
+                            <button
+                              key={option.kind}
+                              type="button"
+                              onClick={() => setSymbolKindFilter(option.kind)}
+                              className={`inline-flex shrink-0 items-center gap-1.5 rounded-md border px-2 py-1 text-xs font-semibold transition-colors ${
+                                symbolKindFilter === option.kind
+                                  ? "border-signal bg-signal/10 text-ink"
+                                  : "border-line bg-white text-graphite hover:border-signal hover:text-ink"
+                              }`}
+                            >
+                              <span
+                                className={`grid h-4 w-4 place-items-center rounded border text-[9px] ${kindMeta.tone}`}
+                              >
+                                {kindMeta.icon}
+                              </span>
+                              <span>{kindMeta.plural}</span>
+                              <span className="rounded bg-white/80 px-1.5 py-0.5 text-[11px] tabular-nums">
+                                {option.count}
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ) : null}
+
                   {!repositoryReady ? (
-                    <div className="grid h-[220px] place-items-center rounded-md border border-line bg-cloud p-4 text-center text-sm leading-6 text-graphite">
+                    <div className="grid min-h-0 flex-1 place-items-center rounded-md border border-line bg-cloud p-4 text-center text-sm leading-6 text-graphite">
                       Symbol extraction appears here after analysis completes.
                     </div>
                   ) : isLoadingSymbols ? (
-                    <div className="grid h-[220px] place-items-center text-sm text-graphite">
+                    <div className="grid min-h-0 flex-1 place-items-center text-sm text-graphite">
                       <span className="inline-flex items-center gap-2">
                         <Loader2 size={16} className="animate-spin" />
                         Loading symbols
                       </span>
                     </div>
                   ) : symbolsError ? (
-                    <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm leading-6 text-red-700">
+                    <div className="min-h-0 flex-1 rounded-md border border-red-200 bg-red-50 p-3 text-sm leading-6 text-red-700">
                       {symbolsError}
                     </div>
                   ) : symbolsResponse?.symbols.length ? (
-                    <div className="h-[220px] overflow-auto rounded-md border border-line bg-white">
+                    <div className="min-h-0 flex-1 overflow-auto rounded-md border border-line bg-white">
                       {filteredSymbols.length ? (
                         <div className="divide-y divide-line">
                           {filteredSymbols.map((symbol) => {
-                        const isSelected = selectedSymbolId === symbol.id;
-                        const relationCount =
-                          symbol.outgoingCalls.length +
-                          symbol.outgoingReferences.length +
-                          symbol.incomingReferences.length;
-                        const occurrenceLabel =
-                          symbolOccurrenceLabels.get(symbol.id);
+                            const isSelected = selectedSymbolId === symbol.id;
+                            const kindMeta = getSymbolKindMeta(symbol.kind);
+                            const relationCount =
+                              symbol.outgoingCalls.length +
+                              symbol.outgoingReferences.length +
+                              symbol.incomingReferences.length;
+                            const occurrenceLabel =
+                              symbolOccurrenceLabels.get(symbol.id);
 
-                        return (
-                          <button
-                            key={symbol.id}
-                            onClick={() => selectSymbol(symbol.id)}
-                            className={`relative grid w-full grid-cols-[minmax(0,1fr)_58px] gap-3 px-3 py-2 text-left transition-colors hover:bg-cloud ${
-                              isSelected ? "bg-signal/5" : ""
-                            }`}
-                          >
-                            {isSelected ? (
-                              <span className="absolute left-0 top-2 h-[calc(100%-1rem)] w-0.5 rounded-r bg-signal" />
-                            ) : null}
-                              <div className="min-w-0">
+                            return (
+                              <button
+                                key={symbol.id}
+                                onClick={() => selectSymbol(symbol.id)}
+                                className={`relative w-full px-3 py-2.5 text-left transition-colors hover:bg-cloud ${
+                                  isSelected
+                                    ? "bg-signal/5 shadow-[inset_0_0_0_1px_rgba(37,99,235,0.14)]"
+                                    : ""
+                                }`}
+                              >
+                                {isSelected ? (
+                                  <span className="absolute left-0 top-2 h-[calc(100%-1rem)] w-0.5 rounded-r bg-signal" />
+                                ) : null}
+                                <div className="min-w-0 pl-1">
                                   <div className="flex min-w-0 items-center gap-2">
-                                    <p className="truncate text-sm font-semibold text-ink">
+                                    <span
+                                      className={`grid h-6 w-6 shrink-0 place-items-center rounded border text-[10px] font-semibold ${kindMeta.tone}`}
+                                    >
+                                      {kindMeta.icon}
+                                    </span>
+                                    <p className="min-w-0 flex-1 truncate text-sm font-semibold text-ink">
                                       {symbol.name}
                                     </p>
                                     {occurrenceLabel ? (
-                                      <span className="shrink-0 rounded border border-line bg-cloud px-1.5 py-0.5 text-[11px] font-medium text-graphite">
+                                      <span className="shrink-0 rounded border border-line bg-white px-1.5 py-0.5 text-[11px] font-medium text-graphite">
                                         {occurrenceLabel}
                                       </span>
                                     ) : null}
+                                    <span className="shrink-0 rounded bg-cloud px-1.5 py-0.5 text-[11px] font-semibold text-graphite">
+                                      {formatUsageCount(relationCount, "link")}
+                                    </span>
                                   </div>
-                                  <p className="mt-0.5 truncate text-xs text-graphite">
-                                    {symbol.kind}
-                                    {symbol.visibility
-                                      ? ` • ${symbol.visibility}`
-                                      : ""}
+                                  <p className="ml-8 mt-1 truncate text-xs text-graphite">
+                                    {kindMeta.singular}
+                                    {symbol.visibility ? ` • ${symbol.visibility}` : ""}{" "}
+                                    • {symbol.filePath} • {formatCompactLineRange(symbol)}
                                   </p>
-                                  <p className="mt-1 truncate text-xs text-graphite">
-                                    {symbol.filePath} •{" "}
-                                    {formatCompactLineRange(symbol)}
-                                  </p>
-                              </div>
-                              <div className="flex flex-col items-end justify-center gap-0.5">
-                                <span className="tabular-nums text-sm font-semibold text-ink">
-                                  {relationCount}
-                                </span>
-                                <span className="text-[11px] uppercase tracking-wide text-graphite">
-                                  links
-                                </span>
-                              </div>
-                          </button>
-                        );
+                                </div>
+                              </button>
+                            );
                           })}
                         </div>
                       ) : (
@@ -1556,7 +2558,7 @@ export default function Home() {
                       )}
                     </div>
                   ) : (
-                    <div className="grid h-[220px] place-items-center rounded-md border border-line bg-cloud p-4 text-center text-sm leading-6 text-graphite">
+                    <div className="grid min-h-0 flex-1 place-items-center rounded-md border border-line bg-cloud p-4 text-center text-sm leading-6 text-graphite">
                       No parser-backed symbols were extracted for this
                       repository.
                     </div>
@@ -1566,34 +2568,57 @@ export default function Home() {
                 <div className="min-h-0 bg-cloud/50 p-4">
                   {selectedSymbol ? (
                     <div className="flex h-full min-h-0 flex-col gap-3">
-                      <div className="rounded-md border border-line bg-white px-3 py-2.5">
+                      <div className="rounded-md border border-line bg-white px-3 py-2.5 shadow-sm">
                         <div className="flex min-w-0 items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            <p className="truncate text-sm font-semibold text-ink">
-                              {selectedSymbol.name}
-                            </p>
-                            <p className="mt-0.5 text-xs text-graphite">
-                              {selectedSymbol.kind}
-                              {selectedSymbol.visibility
-                                ? ` • ${selectedSymbol.visibility}`
-                                : ""}
-                            </p>
+                          <div className="min-w-0 flex-1">
+                            <div className="flex min-w-0 items-center gap-2">
+                              <span
+                                className={`grid h-6 w-6 shrink-0 place-items-center rounded border text-[10px] font-semibold ${
+                                  getSymbolKindMeta(selectedSymbol.kind).tone
+                                }`}
+                              >
+                                {getSymbolKindMeta(selectedSymbol.kind).icon}
+                              </span>
+                              <div className="min-w-0">
+                                <p className="truncate text-sm font-semibold text-ink">
+                                  {selectedSymbol.name}
+                                </p>
+                                <p className="text-xs text-graphite">
+                                  {getSymbolKindMeta(selectedSymbol.kind).singular}
+                                  {selectedSymbol.visibility
+                                    ? ` • ${selectedSymbol.visibility}`
+                                    : ""}
+                                </p>
+                              </div>
+                            </div>
                           </div>
-                          {isLoadingSymbolReferences ? (
-                            <Loader2
-                              size={16}
-                              className="mt-1 shrink-0 animate-spin text-signal"
-                            />
-                          ) : null}
+                          <div className="flex shrink-0 items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => openSymbolInFiles(selectedSymbol)}
+                              className="inline-flex h-7 items-center gap-1.5 rounded-md border border-line bg-white px-2 text-xs font-medium text-graphite transition-colors hover:border-signal hover:text-ink"
+                            >
+                              <ExternalLink size={13} />
+                              Open in Files
+                            </button>
+                            {isLoadingSymbolReferences ? (
+                              <Loader2
+                                size={16}
+                                className="shrink-0 animate-spin text-signal"
+                              />
+                            ) : null}
+                          </div>
                         </div>
-                        <p className="mt-2 truncate text-xs text-graphite">
-                          {selectedSymbol.filePath} •{" "}
-                          {formatLineRange(selectedSymbol)}
+                        <p className="mt-2 rounded-md bg-cloud px-3 py-1.5 text-sm leading-6 text-ink">
+                          {buildSelectedSymbolSummary(selectedSymbol)}
+                        </p>
+                        <p className="mt-1.5 truncate text-xs text-graphite">
+                          {selectedSymbol.filePath} • {formatLineRange(selectedSymbol)}
                         </p>
                         {selectedSymbol.signature ? (
                           <pre
                             title={selectedSymbol.signature}
-                            className="mt-2 max-h-16 overflow-hidden whitespace-pre-wrap break-words rounded-md border border-line bg-cloud px-3 py-2 text-xs leading-5 text-ink"
+                            className="mt-1.5 max-h-12 overflow-hidden whitespace-pre-wrap break-words rounded-md border border-line bg-cloud/70 px-3 py-1.5 text-xs leading-5 text-graphite"
                           >
                             {selectedSymbol.signature}
                           </pre>
@@ -1634,6 +2659,10 @@ export default function Home() {
                       <SymbolRelationshipRows
                         items={activeSymbolRelations}
                         onSelectSymbol={selectSymbol}
+                        emptyTitle={activeRelationshipEmptyState.title}
+                        emptyDescription={
+                          activeRelationshipEmptyState.description
+                        }
                       />
                     </div>
                   ) : (
@@ -1789,16 +2818,14 @@ export default function Home() {
           ) : null}
 
           {activeWorkspaceTab === "graph" ? (
-            <div className="grid h-[640px] place-items-center rounded-md border border-line bg-white p-6 text-center">
-              <div>
-                <Network className="mx-auto mb-3 text-signal" />
-                <p className="font-semibold">Knowledge graph</p>
-                <p className="mt-2 max-w-md text-sm leading-6 text-graphite">
-                  Dependency and architecture graph exploration will attach
-                  here as the graph intelligence milestone expands.
-                </p>
-              </div>
-            </div>
+            <SymbolGraphPanel
+              repositoryReady={repositoryReady}
+              symbolsResponse={symbolsResponse}
+              focusedSymbol={graphFocusedSymbol}
+              onSelectSymbol={selectSymbol}
+              onInspectSymbol={inspectSymbol}
+              onOpenInFiles={openSymbolInFiles}
+            />
           ) : null}
 
           {activeWorkspaceTab === "docs" ? (
