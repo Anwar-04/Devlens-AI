@@ -1036,10 +1036,10 @@ function FileSourcePreview({
               className="overflow-auto bg-[#0f172a] py-3 text-[13px] leading-6 text-slate-100"
               style={{ height: sourcePreviewHeight }}
             >
-              <pre className="font-mono">
-                {source.file.previewLines.map((line) => (
+              <div className="font-mono">
+                {source.file.previewLines.map((line, index) => (
                   <div
-                    key={`${line.lineNumber}-${line.content}`}
+                    key={`${line.lineNumber}-${index}`}
                     className="grid grid-cols-[64px_1fr] border-l-2 border-transparent px-3"
                   >
                     <span className="select-none pr-5 text-right text-slate-500">
@@ -1050,7 +1050,7 @@ function FileSourcePreview({
                     </code>
                   </div>
                 ))}
-              </pre>
+              </div>
             </div>
           </div>
         ) : (
@@ -1195,8 +1195,11 @@ function buildGraphPlacements(focusedSymbol: RepositorySymbol) {
   const visibleReferences = focusedSymbol.outgoingReferences.slice(0, 4);
   const visibleInbound = focusedSymbol.incomingReferences.slice(0, 3);
 
-  const distribute = (count: number, start: number, gap: number) =>
-    Array.from({ length: count }, (_, index) => start + index * gap);
+  const distribute = (count: number, start: number, end: number) => {
+    if (count <= 1) return [start + (end - start) / 2];
+    const gap = (end - start) / (count - 1);
+    return Array.from({ length: count }, (_, index) => start + index * gap);
+  };
 
   const placements: SymbolGraphNodePlacement[] = [
     ...visibleInbound.map((item, index) => ({
@@ -1204,24 +1207,24 @@ function buildGraphPlacements(focusedSymbol: RepositorySymbol) {
       relation: "inbound" as const,
       relationLabel: "Inbound",
       symbol: item.symbol,
-      x: 42,
-      y: distribute(visibleInbound.length, 84, 104)[index] ?? 84,
+      x: 5,
+      y: distribute(visibleInbound.length, 18, 58)[index] ?? 36,
     })),
     ...visibleCalls.map((item, index) => ({
       id: item.referenceId,
       relation: "calls" as const,
       relationLabel: "Call",
       symbol: item.symbol,
-      x: 690,
-      y: distribute(visibleCalls.length, 84, 104)[index] ?? 84,
+      x: 71,
+      y: distribute(visibleCalls.length, 18, 58)[index] ?? 36,
     })),
     ...visibleReferences.map((item, index) => ({
       id: item.referenceId,
       relation: "references" as const,
       relationLabel: "Reference",
       symbol: item.symbol,
-      x: 180 + index * 150,
-      y: 320,
+      x: distribute(visibleReferences.length, 8, 68)[index] ?? 38,
+      y: 76,
     })),
   ];
 
@@ -1253,33 +1256,33 @@ function getGraphEdgeTone(relation: SymbolGraphNodePlacement["relation"]) {
 
 function getGraphPath(node: SymbolGraphNodePlacement) {
   const center = {
-    x: 480,
-    y: 184,
+    x: 50,
+    y: 43,
   };
   const target = {
-    x: node.x + 110,
-    y: node.y + 38,
+    x: node.x + 12,
+    y: node.y + 7,
   };
 
   if (node.relation === "inbound") {
-    const startX = node.x + 220;
-    const startY = node.y + 38;
-    return `M ${startX} ${startY} C ${startX + 70} ${startY}, ${
-      center.x - 110
-    } ${center.y}, ${center.x - 110} ${center.y}`;
+    const startX = node.x + 24;
+    const startY = node.y + 7;
+    return `M ${startX} ${startY} C ${startX + 8} ${startY}, ${
+      center.x - 16
+    } ${center.y}, ${center.x - 12} ${center.y}`;
   }
 
   if (node.relation === "calls") {
-    const startX = center.x + 110;
-    return `M ${startX} ${center.y} C ${startX + 70} ${center.y}, ${
-      node.x - 70
+    const startX = center.x + 12;
+    return `M ${startX} ${center.y} C ${startX + 8} ${center.y}, ${
+      node.x - 8
     } ${target.y}, ${node.x} ${target.y}`;
   }
 
-  const startY = center.y + 56;
-  return `M ${center.x} ${startY} C ${center.x} ${startY + 52}, ${
+  const startY = center.y + 11;
+  return `M ${center.x} ${startY} C ${center.x} ${startY + 11}, ${
     target.x
-  } ${node.y - 52}, ${target.x} ${node.y}`;
+  } ${node.y - 10}, ${target.x} ${node.y}`;
 }
 
 function SymbolGraphCanvasNode({
@@ -1323,7 +1326,7 @@ function SymbolGraphCanvasNode({
     </>
   );
 
-  const className = `h-full w-full rounded-lg border p-3 text-left shadow-sm transition-colors ${
+  const className = `h-full w-full rounded-md border p-3 text-left shadow-sm transition-colors ${
     isFocused
       ? "border-signal bg-white shadow-[0_12px_32px_rgba(37,99,235,0.16)]"
       : "border-line bg-white hover:border-signal hover:bg-cloud"
@@ -1381,10 +1384,16 @@ function SymbolGraphCanvas({
         </div>
       </div>
 
-      <div className="relative h-[430px] overflow-hidden rounded-md border border-line bg-cloud">
+      <div className="relative h-[520px] overflow-hidden rounded-md border border-line bg-cloud">
+        <div className="absolute inset-x-6 top-5 grid grid-cols-3 text-xs font-semibold uppercase tracking-wide text-graphite">
+          <span>Inbound</span>
+          <span className="text-center">Focus</span>
+          <span className="text-right">Outgoing</span>
+        </div>
         <svg
           className="absolute inset-0 h-full w-full"
-          viewBox="0 0 960 430"
+          viewBox="0 0 100 100"
+          preserveAspectRatio="none"
           role="img"
           aria-label="Symbol relationship graph"
         >
@@ -1407,7 +1416,7 @@ function SymbolGraphCanvas({
               );
             })}
           </defs>
-          <rect width="960" height="430" fill="transparent" />
+          <rect width="100" height="100" fill="transparent" />
           {placements.map((node) => {
             const tone = getGraphEdgeTone(node.relation);
             return (
@@ -1417,14 +1426,14 @@ function SymbolGraphCanvas({
                 fill="none"
                 stroke={tone.stroke}
                 strokeOpacity="0.62"
-                strokeWidth="2"
+                strokeWidth="0.35"
                 markerEnd={`url(#arrow-${node.relation})`}
               />
             );
           })}
         </svg>
 
-        <div className="absolute left-[38.5%] top-[33%] h-[112px] w-[230px]">
+        <div className="absolute left-[38%] top-[34%] h-[116px] w-[230px]">
           <SymbolGraphCanvasNode
             symbol={focusedSymbol}
             isFocused
@@ -1435,23 +1444,23 @@ function SymbolGraphCanvas({
         {placements.map((node) => (
           <div
             key={node.id}
-            className="absolute h-[82px] w-[220px]"
-            style={{ left: node.x, top: node.y }}
+            className="absolute h-[78px] w-[220px]"
+            style={{ left: `${node.x}%`, top: `${node.y}%` }}
           >
             <SymbolGraphCanvasNode
               symbol={node.symbol}
-              relationLabel={node.relationLabel}
               onClick={() => onSelectSymbol(node.symbol.id)}
             />
           </div>
         ))}
-
-        {hiddenTotal ? (
-          <div className="absolute bottom-3 right-3 rounded-md border border-line bg-white px-3 py-2 text-xs font-semibold text-graphite shadow-sm">
-            +{hiddenTotal} more relationships in lists below
-          </div>
-        ) : null}
       </div>
+
+      {hiddenTotal ? (
+        <div className="mt-3 rounded-md border border-line bg-cloud px-3 py-2 text-sm text-graphite">
+          +{hiddenTotal} more relationships are available in the detailed lists
+          below.
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -1670,6 +1679,7 @@ export default function Home() {
     () => filterTree(explorerTree, fileQuery, languageFilter),
     [explorerTree, fileQuery, languageFilter],
   );
+  const hasFileFilters = Boolean(fileQuery.trim()) || languageFilter !== "all";
   const languages = useMemo(() => {
     const values = new Set<string>();
     tree?.nodes.forEach((node) => {
@@ -2041,7 +2051,7 @@ export default function Home() {
 
   function focusSearchResult(result: SearchResult) {
     setActiveWorkspaceTab("files");
-    setFileQuery(result.path);
+    setFileQuery("");
     setLanguageFilter("all");
     setExpanded((current) => {
       const next = new Set(current);
@@ -2053,7 +2063,7 @@ export default function Home() {
   }
 
   function focusSymbolFile(symbol: RepositorySymbol) {
-    setFileQuery(symbol.filePath);
+    setFileQuery("");
     setLanguageFilter("all");
     setExpanded((current) => {
       const next = new Set(current);
@@ -2062,6 +2072,11 @@ export default function Home() {
     });
     const node = findExplorerNode(explorerTree, symbol.filePath);
     if (node) setSelectedNode(node);
+  }
+
+  function clearFileFilters() {
+    setFileQuery("");
+    setLanguageFilter("all");
   }
 
   function selectSymbol(symbolId: string) {
@@ -2341,7 +2356,7 @@ export default function Home() {
                   </div>
                   <Activity size={18} className="text-mint" />
                 </div>
-                <div className="mt-3 grid grid-cols-[1fr_160px] gap-2">
+                <div className="mt-3 grid grid-cols-[1fr_160px_auto] gap-2">
                   <div className="flex items-center gap-2 rounded-md border border-line bg-cloud px-3 py-2">
                     <Search size={15} className="text-graphite" />
                     <input
@@ -2363,7 +2378,28 @@ export default function Home() {
                       </option>
                     ))}
                   </select>
+                  <button
+                    type="button"
+                    onClick={clearFileFilters}
+                    disabled={!hasFileFilters}
+                    className="inline-flex h-10 items-center justify-center gap-1.5 rounded-md border border-line bg-white px-3 text-sm font-medium text-graphite transition-colors hover:border-signal hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+                    title="Clear file filters"
+                  >
+                    <XCircle size={15} />
+                    Clear
+                  </button>
                 </div>
+                {hasFileFilters ? (
+                  <p className="mt-2 text-xs text-graphite">
+                    Showing {visibleTree.length ? "filtered" : "no matching"}{" "}
+                    file results. Clear filters to return to the full tree.
+                  </p>
+                ) : selectedNode?.kind === "file" ? (
+                  <p className="mt-2 truncate text-xs text-graphite">
+                    Focused on {selectedNode.path}. The full file tree remains
+                    available.
+                  </p>
+                ) : null}
               </div>
               <div className="grid h-[640px] grid-cols-[360px_1fr]">
                 <div className="min-h-0 overflow-auto border-r border-line bg-white p-3">

@@ -206,6 +206,27 @@ function buildSourceLines(source: string, startLine: number) {
   }));
 }
 
+function buildMergedSourceLines(
+  chunks: Array<{ startLine: number; content: string }>
+) {
+  const linesByNumber = new Map<
+    number,
+    { lineNumber: number; content: string }
+  >();
+
+  for (const chunk of chunks) {
+    for (const line of buildSourceLines(chunk.content, chunk.startLine)) {
+      if (!linesByNumber.has(line.lineNumber)) {
+        linesByNumber.set(line.lineNumber, line);
+      }
+    }
+  }
+
+  return [...linesByNumber.values()].sort(
+    (left, right) => left.lineNumber - right.lineNumber
+  );
+}
+
 const symbolReferenceInclude = {
   outgoingReferences: {
     orderBy: { kind: "asc" as const },
@@ -475,6 +496,8 @@ export class RepositoriesController {
       }
     });
 
+    const previewLines = buildMergedSourceLines(chunks);
+
     return {
       repositoryId: id,
       file: {
@@ -485,11 +508,9 @@ export class RepositoriesController {
         isGenerated: file.isGenerated,
         isTest: file.isTest,
         sourceAvailable: chunks.length > 0,
-        previewLines: chunks.flatMap((chunk) =>
-          buildSourceLines(chunk.content, chunk.startLine)
-        ),
-        previewStartLine: chunks[0]?.startLine ?? null,
-        previewEndLine: chunks.at(-1)?.endLine ?? null
+        previewLines,
+        previewStartLine: previewLines[0]?.lineNumber ?? null,
+        previewEndLine: previewLines.at(-1)?.lineNumber ?? null
       }
     };
   }
