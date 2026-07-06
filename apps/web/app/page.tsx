@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   Activity,
   AlertCircle,
+  BookOpen,
   Braces,
   CheckCircle2,
   ChevronDown,
@@ -24,6 +25,7 @@ import {
   Search,
   ShieldCheck,
   Sparkles,
+  Workflow,
   XCircle,
 } from "lucide-react";
 
@@ -254,6 +256,32 @@ const modules = [
   { name: "Knowledge Graph", status: "Pending", icon: Braces },
 ];
 
+const TEST_PATH_PATTERN =
+  /(^|\/)(__tests__|tests?)\/|(\.|-)(test|spec)\.[^.]+$/i;
+
+const DOCS_PLACEHOLDERS = [
+  {
+    title: "README summary",
+    description: "Condensed project overview from README and indexed docs.",
+    icon: BookOpen,
+  },
+  {
+    title: "Architecture notes",
+    description: "Generated system map, boundaries, and module responsibilities.",
+    icon: Workflow,
+  },
+  {
+    title: "API/reference docs",
+    description: "Symbol and public interface documentation from code intelligence.",
+    icon: Braces,
+  },
+  {
+    title: "Explain repository",
+    description: "Guided narrative for onboarding and repository Q&A.",
+    icon: Sparkles,
+  },
+];
+
 function formatLineRange(item: { startLine: number; endLine: number }): string {
   return `Lines ${item.startLine}-${item.endLine}`;
 }
@@ -368,6 +396,10 @@ function getArticleForWord(word: string): "a" | "an" {
 
 function formatUsageCount(count: number, label: string): string {
   return `${count} ${label}${count === 1 ? "" : "s"}`;
+}
+
+function formatList(values: string[], fallback = "Pending"): string {
+  return values.length ? values.join(", ") : fallback;
 }
 
 function buildSelectedSymbolSummary(symbol: RepositorySymbol): string {
@@ -564,6 +596,73 @@ function findExplorerNode(
     if (child) return child;
   }
   return null;
+}
+
+function flattenExplorerFiles(nodes: ExplorerNode[]): ExplorerNode[] {
+  return nodes.flatMap((node) =>
+    node.kind === "file" ? [node] : flattenExplorerFiles(node.children),
+  );
+}
+
+function buildLanguageSummary(files: ExplorerNode[]) {
+  const totals = new Map<string, { files: number; sizeBytes: number }>();
+  files.forEach((file) => {
+    const language = file.language ?? "Other";
+    const current = totals.get(language) ?? { files: 0, sizeBytes: 0 };
+    totals.set(language, {
+      files: current.files + 1,
+      sizeBytes: current.sizeBytes + (file.sizeBytes ?? 0),
+    });
+  });
+
+  return [...totals.entries()]
+    .map(([language, summary]) => ({ language, ...summary }))
+    .sort((left, right) => {
+      if (left.language === "Other") return 1;
+      if (right.language === "Other") return -1;
+      return (
+        right.files - left.files || left.language.localeCompare(right.language)
+      );
+    });
+}
+
+function buildImportantPaths(files: ExplorerNode[]) {
+  const priorityPatterns = [
+    /^README(\.|$)/i,
+    /^package\.json$/i,
+    /^src\/index\./i,
+    /^tsconfig\.json$/i,
+    /^apps\//i,
+    /^packages\//i,
+    /^src\//i,
+    /^docs\//i,
+    /config\./i,
+  ];
+
+  return files
+    .filter((file) => priorityPatterns.some((pattern) => pattern.test(file.path)))
+    .sort((left, right) => {
+      const leftTest = TEST_PATH_PATTERN.test(left.path);
+      const rightTest = TEST_PATH_PATTERN.test(right.path);
+      if (leftTest !== rightTest) return leftTest ? 1 : -1;
+
+      const leftIndex = priorityPatterns.findIndex((pattern) =>
+        pattern.test(left.path),
+      );
+      const rightIndex = priorityPatterns.findIndex((pattern) =>
+        pattern.test(right.path),
+      );
+      return leftIndex - rightIndex || left.path.localeCompare(right.path);
+    })
+    .slice(0, 6);
+}
+
+function getSymbolConnectionCount(symbol: RepositorySymbol): number {
+  return (
+    symbol.outgoingCalls.length +
+    symbol.outgoingReferences.length +
+    symbol.incomingReferences.length
+  );
 }
 
 function getParentPaths(path: string): string[] {
@@ -1627,6 +1726,440 @@ function SymbolGraphPanel({
   );
 }
 
+function DocsPanel({
+  repositoryReady,
+  repository,
+  job,
+  files,
+  symbolsResponse,
+  onInspectSymbol,
+  onOpenInFiles,
+}: {
+  repositoryReady: boolean;
+  repository: JobResponse["repository"] | undefined;
+  job: JobResponse | null;
+  files: ExplorerNode[];
+  symbolsResponse: SymbolsResponse | null;
+  onInspectSymbol: (symbolId: string) => void;
+  onOpenInFiles: (symbol: RepositorySymbol) => void;
+}) {
+  const languageSummary = buildLanguageSummary(files);
+  const importantPaths = buildImportantPaths(files);
+  const testFileCount = files.filter((file) =>
+    TEST_PATH_PATTERN.test(file.path),
+  ).length;
+  const exportedSymbols = (symbolsResponse?.symbols ?? []).filter(
+    (symbol) => symbol.visibility === "exported",
+  );
+  const primaryLanguage =
+    languageSummary.find((item) => item.language !== "Other") ??
+    languageSummary[0];
+  const repoName = repository
+    ? `${repository.owner}/${repository.name}`
+    : "this repository";
+  const publicSymbolNames = exportedSymbols
+    .slice(0, 5)
+    .map((symbol) => symbol.name);
+  const keyFileNames = importantPaths.slice(0, 4).map((file) => file.path);
+  const connectedSymbols = [...(symbolsResponse?.symbols ?? [])]
+    .sort(
+      (left, right) =>
+        getSymbolConnectionCount(right) - getSymbolConnectionCount(left) ||
+        left.name.localeCompare(right.name),
+    )
+    .filter((symbol) => getSymbolConnectionCount(symbol) > 0)
+    .slice(0, 5);
+
+  return (
+    <div className="rounded-md border border-line bg-white">
+      <div className="border-b border-line px-4 py-3">
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <p className="font-semibold">Documentation workspace</p>
+            <p className="text-sm text-graphite">
+              Repository facts and documentation-ready signals from the current
+              analysis.
+            </p>
+          </div>
+          <FileCode2 size={18} className="shrink-0 text-signal" />
+        </div>
+      </div>
+
+      <div className="h-[640px] overflow-auto bg-cloud/50 p-4">
+        {!repositoryReady ? (
+          <div className="grid h-full place-items-center rounded-md border border-line bg-white p-6 text-center">
+            <div>
+              <FileCode2 className="mx-auto mb-3 text-signal" />
+              <p className="font-semibold">Analyze a repository first</p>
+              <p className="mt-2 max-w-md text-sm leading-6 text-graphite">
+                Documentation intelligence uses repository metadata, files, and
+                extracted symbols from a completed analysis.
+              </p>
+            </div>
+          </div>
+        ) : (
+          <div className="grid gap-4">
+            <section className="rounded-md border border-line bg-white p-4 shadow-sm">
+              <div className="flex items-start justify-between gap-4">
+                <div className="min-w-0">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-graphite">
+                    Repository summary
+                  </p>
+                  <h2 className="mt-1 truncate text-xl font-semibold text-ink">
+                    {repository
+                      ? `${repository.owner}/${repository.name}`
+                      : "Repository"}
+                  </h2>
+                  <p className="mt-2 text-sm leading-6 text-graphite">
+                    {formatList(repository?.detectedLanguages ?? [])} codebase
+                    with {repository?.fileCount ?? files.length} indexed files
+                    and {symbolsResponse?.count ?? 0} extracted symbols.
+                  </p>
+                </div>
+                <span
+                  className={`shrink-0 rounded px-2 py-1 text-xs font-semibold ${
+                    job?.status === "COMPLETED"
+                      ? "bg-mint/10 text-mint"
+                      : "bg-cloud text-graphite"
+                  }`}
+                >
+                  {job?.status ?? "Pending"}
+                </span>
+              </div>
+
+              <div className="mt-4 grid grid-cols-4 gap-3">
+                {[
+                  {
+                    label: "Languages",
+                    value: formatList(repository?.detectedLanguages ?? []),
+                  },
+                  {
+                    label: "Frameworks",
+                    value: formatList(repository?.detectedFrameworks ?? []),
+                  },
+                  {
+                    label: "Files",
+                    value: `${repository?.fileCount ?? files.length} files`,
+                  },
+                  {
+                    label: "Size",
+                    value: formatBytes(repository?.totalSizeBytes ?? 0),
+                  },
+                ].map((item) => (
+                  <div
+                    key={item.label}
+                    className="rounded-md border border-line bg-cloud px-3 py-2"
+                  >
+                    <p className="text-xs font-medium uppercase tracking-wide text-graphite">
+                      {item.label}
+                    </p>
+                    <p className="mt-1 truncate text-sm font-semibold text-ink">
+                      {item.value}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </section>
+
+            <section className="rounded-md border border-line bg-white p-4 shadow-sm">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="font-semibold text-ink">
+                    Generated docs preview
+                  </p>
+                  <p className="mt-1 text-sm leading-6 text-graphite">
+                    A deterministic first draft assembled from indexed
+                    repository facts.
+                  </p>
+                </div>
+                <BookOpen size={18} className="shrink-0 text-signal" />
+              </div>
+
+              <div className="mt-4 grid gap-3">
+                {[
+                  {
+                    title: "Repository Overview",
+                    body: `${repoName} is indexed as a ${
+                      primaryLanguage?.language ?? "code"
+                    } repository with ${
+                      repository?.fileCount ?? files.length
+                    } files and ${
+                      symbolsResponse?.count ?? 0
+                    } parser-backed symbols. ${
+                      repository?.detectedFrameworks.length
+                        ? `Detected frameworks: ${repository.detectedFrameworks.join(", ")}.`
+                        : "No framework signal has been confirmed yet."
+                    }`,
+                  },
+                  {
+                    title: "Key Files",
+                    body: keyFileNames.length
+                      ? `Start with ${keyFileNames.join(", ")}. These paths look central based on repository conventions and indexed structure.`
+                      : "Key files will appear once the repository tree is indexed.",
+                  },
+                  {
+                    title: "Public Symbols",
+                    body: publicSymbolNames.length
+                      ? `Public documentation should begin with ${publicSymbolNames.join(", ")}. These exported symbols are available for reference docs and examples.`
+                      : "No exported symbols have been identified yet.",
+                  },
+                  {
+                    title: "Testing Signals",
+                    body: testFileCount
+                      ? `${testFileCount} test file${testFileCount === 1 ? "" : "s"} were detected. Test coverage signals can guide usage examples and behavior notes.`
+                      : "No test files were detected from the indexed paths.",
+                  },
+                ].map((item) => (
+                  <div
+                    key={item.title}
+                    className="rounded-md border border-line bg-cloud px-4 py-3"
+                  >
+                    <p className="text-sm font-semibold text-ink">
+                      {item.title}
+                    </p>
+                    <p className="mt-1 text-sm leading-6 text-graphite">
+                      {item.body}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </section>
+
+            <section className="grid grid-cols-[minmax(0,1fr)_320px] gap-4">
+              <div className="rounded-md border border-line bg-white p-4 shadow-sm">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="font-semibold text-ink">
+                      Architecture snapshot
+                    </p>
+                    <p className="mt-1 text-sm leading-6 text-graphite">
+                      Structure and documentation signals inferred from indexed
+                      files.
+                    </p>
+                  </div>
+                  <Workflow size={18} className="shrink-0 text-signal" />
+                </div>
+
+                <div className="mt-4 grid grid-cols-4 gap-3">
+                  {[
+                    {
+                      label: "Exported symbols",
+                      value: String(exportedSymbols.length),
+                    },
+                    { label: "Test files", value: String(testFileCount) },
+                    {
+                      label: "Generated files",
+                      value: "Not indexed",
+                    },
+                    {
+                      label: "Top language",
+                      value: languageSummary[0]?.language ?? "Pending",
+                    },
+                  ].map((item) => (
+                    <div key={item.label} className="rounded-md bg-cloud p-3">
+                      <p className="text-xs text-graphite">{item.label}</p>
+                      <p className="mt-1 truncate text-sm font-semibold text-ink">
+                        {item.value}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="mt-4 grid grid-cols-2 gap-4">
+                  <div>
+                    <p className="text-sm font-semibold text-ink">
+                      Top languages
+                    </p>
+                    <div className="mt-2 grid gap-2">
+                      {languageSummary.slice(0, 5).map((item) => (
+                        <div
+                          key={item.language}
+                          className="flex items-center justify-between gap-3 rounded-md border border-line px-3 py-2 text-sm"
+                        >
+                          <span className="truncate font-medium text-ink">
+                            {item.language}
+                          </span>
+                          <span className="shrink-0 text-xs text-graphite">
+                            {item.files} files
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <p className="text-sm font-semibold text-ink">
+                      Important paths
+                    </p>
+                    <div className="mt-2 grid gap-2">
+                      {importantPaths.length ? (
+                        importantPaths.map((file) => (
+                          <div
+                            key={file.path}
+                            className="flex min-w-0 items-center gap-2 rounded-md border border-line px-3 py-2 text-sm"
+                          >
+                            <File size={14} className="shrink-0 text-signal" />
+                            <span className="truncate text-ink" title={file.path}>
+                              {file.path}
+                            </span>
+                          </div>
+                        ))
+                      ) : (
+                        <div className="rounded-md border border-line bg-cloud p-3 text-sm text-graphite">
+                          Important paths will appear after file indexing.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="rounded-md border border-line bg-white p-4 shadow-sm">
+                <p className="font-semibold text-ink">Documentation queue</p>
+                <p className="mt-1 text-sm leading-6 text-graphite">
+                  Agent-backed generation will attach to these surfaces next.
+                </p>
+                <div className="mt-4 grid gap-3">
+                  {DOCS_PLACEHOLDERS.map((item) => {
+                    const Icon = item.icon;
+                    return (
+                      <div
+                        key={item.title}
+                        className="rounded-md border border-dashed border-line bg-cloud/70 p-3 opacity-75"
+                      >
+                        <div className="flex items-start gap-3">
+                          <Icon
+                            size={17}
+                            className="mt-0.5 shrink-0 text-graphite"
+                          />
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2">
+                              <p className="truncate text-sm font-semibold text-ink">
+                                {item.title}
+                              </p>
+                              <span className="shrink-0 rounded bg-white px-1.5 py-0.5 text-[11px] font-semibold text-graphite">
+                                Queued
+                              </span>
+                            </div>
+                            <p className="mt-1 text-xs leading-5 text-graphite">
+                              {item.description}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </section>
+
+            <section className="rounded-md border border-line bg-white p-4 shadow-sm">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="font-semibold text-ink">Symbol overview</p>
+                  <p className="mt-1 text-sm leading-6 text-graphite">
+                    Public interfaces and highly connected symbols that should
+                    anchor generated docs.
+                  </p>
+                </div>
+                <Braces size={18} className="shrink-0 text-signal" />
+              </div>
+
+              <div className="mt-4 grid grid-cols-2 gap-4">
+                <div>
+                  <p className="text-sm font-semibold text-ink">
+                    Most connected
+                  </p>
+                  <div className="mt-2 grid gap-2">
+                    {connectedSymbols.length ? (
+                      connectedSymbols.map((symbol) => (
+                        <div
+                          key={symbol.id}
+                          className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 rounded-md border border-line p-3"
+                        >
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-semibold text-ink">
+                              {symbol.name}
+                            </p>
+                            <p className="mt-1 truncate text-xs text-graphite">
+                              {getSymbolKindMeta(symbol.kind).singular} -
+                              {symbol.filePath} -{" "}
+                              {formatCompactLineRange(symbol)}
+                            </p>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <span className="rounded bg-cloud px-2 py-1 text-xs font-semibold text-graphite">
+                              {formatUsageCount(
+                                getSymbolConnectionCount(symbol),
+                                "link",
+                              )}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => onInspectSymbol(symbol.id)}
+                              className="inline-flex h-8 items-center justify-center rounded-md border border-line bg-white px-2 text-xs font-medium text-graphite hover:border-signal hover:text-ink"
+                            >
+                              Inspect
+                            </button>
+                          </div>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="rounded-md border border-line bg-cloud p-3 text-sm text-graphite">
+                        Connected symbols will appear after relationship
+                        indexing.
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div>
+                  <p className="text-sm font-semibold text-ink">
+                    Exported symbols
+                  </p>
+                  <div className="mt-2 grid max-h-[268px] gap-2 overflow-auto pr-1">
+                    {exportedSymbols.length ? (
+                      exportedSymbols.slice(0, 8).map((symbol) => (
+                        <div
+                          key={symbol.id}
+                          className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 rounded-md border border-line p-3"
+                        >
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-semibold text-ink">
+                              {symbol.name}
+                            </p>
+                            <p className="mt-1 truncate text-xs text-graphite">
+                              {getSymbolKindMeta(symbol.kind).singular} -
+                              {symbol.filePath}
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => onOpenInFiles(symbol)}
+                            className="inline-flex h-8 items-center justify-center gap-1.5 rounded-md border border-line bg-white px-2 text-xs font-medium text-graphite hover:border-signal hover:text-ink"
+                          >
+                            <ExternalLink size={13} />
+                            File
+                          </button>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="rounded-md border border-line bg-cloud p-3 text-sm text-graphite">
+                        Exported symbols will appear when parser-backed symbol
+                        extraction is available.
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </section>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function Home() {
   const [repoUrl, setRepoUrl] = useState("https://github.com/vercel/ms");
   const [job, setJob] = useState<JobResponse | null>(null);
@@ -1674,6 +2207,10 @@ export default function Home() {
   const explorerTree = useMemo(
     () => buildExplorerTree(tree?.nodes ?? []),
     [tree],
+  );
+  const explorerFiles = useMemo(
+    () => flattenExplorerFiles(explorerTree),
+    [explorerTree],
   );
   const visibleTree = useMemo(
     () => filterTree(explorerTree, fileQuery, languageFilter),
@@ -2865,16 +3402,15 @@ export default function Home() {
           ) : null}
 
           {activeWorkspaceTab === "docs" ? (
-            <div className="grid h-[640px] place-items-center rounded-md border border-line bg-white p-6 text-center">
-              <div>
-                <FileCode2 className="mx-auto mb-3 text-signal" />
-                <p className="font-semibold">Documentation agent</p>
-                <p className="mt-2 max-w-md text-sm leading-6 text-graphite">
-                  Generated docs, summaries, and explanation workflows will
-                  live here as documentation intelligence comes online.
-                </p>
-              </div>
-            </div>
+            <DocsPanel
+              repositoryReady={repositoryReady}
+              repository={repository}
+              job={job}
+              files={explorerFiles}
+              symbolsResponse={symbolsResponse}
+              onInspectSymbol={inspectSymbol}
+              onOpenInFiles={openSymbolInFiles}
+            />
           ) : null}
         </section>
 
