@@ -17,13 +17,10 @@ import {
   FileCode2,
   Folder,
   FolderOpen,
-  GitBranch,
   GitPullRequest,
-  KeyRound,
   Loader2,
   Network,
   Search,
-  ShieldCheck,
   Sparkles,
   Workflow,
   XCircle,
@@ -240,14 +237,6 @@ type DocsSummaryResponse = {
   }>;
 };
 
-type DocsDraftResponse = {
-  repositoryId: string;
-  title: string;
-  markdown: string;
-  generatedAt: string;
-  source: "deterministic";
-};
-
 type SymbolReferencesResponse = {
   repositoryId: string;
   symbol: RepositorySymbol;
@@ -275,17 +264,11 @@ type SymbolSourceResponse = {
 };
 
 type SymbolRelationshipTab = "calls" | "references" | "referencedBy";
-type WorkspaceTab = "files" | "symbols" | "search" | "graph" | "docs";
+type WorkspaceTab = "brief" | "files" | "search";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
 
-const navItems = [
-  "Overview",
-  "Folder Explorer",
-  "Dependency Graph",
-  "API Explorer",
-  "Docs",
-];
+const navItems = ["Repository", "Search", "DevLens AI"];
 const pipelineSteps = [
   { key: "queued", label: "Queued", description: "Waiting for a worker" },
   {
@@ -312,18 +295,9 @@ const pipelineSteps = [
 ];
 
 const workspaceTabs: Array<{ key: WorkspaceTab; label: string }> = [
+  { key: "brief", label: "Brief" },
   { key: "files", label: "Files" },
-  { key: "symbols", label: "Symbols" },
   { key: "search", label: "Search" },
-  { key: "graph", label: "Graph" },
-  { key: "docs", label: "Docs" },
-];
-
-const modules = [
-  { name: "Repository Intelligence", status: "Ready", icon: GitBranch },
-  { name: "Architecture Agent", status: "Queued", icon: Network },
-  { name: "Documentation Agent", status: "Queued", icon: FileCode2 },
-  { name: "Knowledge Graph", status: "Pending", icon: Braces },
 ];
 
 function formatLineRange(item: { startLine: number; endLine: number }): string {
@@ -1699,19 +1673,11 @@ function SymbolGraphPanel({
   );
 }
 
-function DocsPanel({
+function RepoBriefPanel({
   repositoryReady,
   summary,
   isLoading,
   error,
-  readmeDraft,
-  isGeneratingReadmeDraft,
-  readmeDraftError,
-  onGenerateReadmeDraft,
-  architectureNotes,
-  isGeneratingArchitectureNotes,
-  architectureNotesError,
-  onGenerateArchitectureNotes,
   onInspectSymbol,
   onOpenInFiles,
 }: {
@@ -1719,47 +1685,18 @@ function DocsPanel({
   summary: DocsSummaryResponse | null;
   isLoading: boolean;
   error: string | null;
-  readmeDraft: DocsDraftResponse | null;
-  isGeneratingReadmeDraft: boolean;
-  readmeDraftError: string | null;
-  onGenerateReadmeDraft: () => void;
-  architectureNotes: DocsDraftResponse | null;
-  isGeneratingArchitectureNotes: boolean;
-  architectureNotesError: string | null;
-  onGenerateArchitectureNotes: () => void;
   onInspectSymbol: (symbolId: string) => void;
   onOpenInFiles: (symbol: { filePath: string }) => void;
 }) {
-  const [readmeCopyState, setReadmeCopyState] = useState<"idle" | "copied">(
-    "idle",
-  );
-  const [architectureCopyState, setArchitectureCopyState] = useState<
-    "idle" | "copied"
-  >("idle");
-
-  async function copyReadmeDraft() {
-    if (!readmeDraft) return;
-    await navigator.clipboard.writeText(readmeDraft.markdown);
-    setReadmeCopyState("copied");
-    window.setTimeout(() => setReadmeCopyState("idle"), 1400);
-  }
-
-  async function copyArchitectureNotes() {
-    if (!architectureNotes) return;
-    await navigator.clipboard.writeText(architectureNotes.markdown);
-    setArchitectureCopyState("copied");
-    window.setTimeout(() => setArchitectureCopyState("idle"), 1400);
-  }
-
   return (
     <div className="rounded-md border border-line bg-white">
       <div className="border-b border-line px-4 py-3">
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0">
-            <p className="font-semibold">Documentation workspace</p>
+            <p className="font-semibold">Repo Brief</p>
             <p className="text-sm text-graphite">
-              Repository facts and documentation-ready signals from the current
-              analysis.
+              The essential repository facts, starting points, and code signals
+              from the current analysis.
             </p>
           </div>
           <FileCode2 size={18} className="shrink-0 text-signal" />
@@ -1773,8 +1710,8 @@ function DocsPanel({
               <FileCode2 className="mx-auto mb-3 text-signal" />
               <p className="font-semibold">Analyze a repository first</p>
               <p className="mt-2 max-w-md text-sm leading-6 text-graphite">
-                Documentation intelligence uses repository metadata, files, and
-                extracted symbols from a completed analysis.
+                Repo Brief uses repository metadata, files, and extracted
+                symbols from a completed analysis.
               </p>
             </div>
           </div>
@@ -1782,10 +1719,10 @@ function DocsPanel({
           <div className="grid h-full place-items-center rounded-md border border-line bg-white p-6 text-center">
             <div>
               <Loader2 className="mx-auto mb-3 animate-spin text-signal" />
-              <p className="font-semibold">Loading documentation summary</p>
+              <p className="font-semibold">Loading Repo Brief</p>
               <p className="mt-2 max-w-md text-sm leading-6 text-graphite">
-                Collecting repository facts, architecture signals, and public
-                symbol documentation candidates.
+                Collecting repository facts, key paths, architecture signals,
+                and public symbols.
               </p>
             </div>
           </div>
@@ -1799,7 +1736,7 @@ function DocsPanel({
               <div className="flex items-start justify-between gap-4">
                 <div className="min-w-0">
                   <p className="text-xs font-semibold uppercase tracking-wide text-graphite">
-                    Repository summary
+                    Repository overview
                   </p>
                   <h2 className="mt-1 truncate text-xl font-semibold text-ink">
                     {summary.repository.owner}/{summary.repository.name}
@@ -1861,11 +1798,11 @@ function DocsPanel({
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <p className="font-semibold text-ink">
-                    Generated docs preview
+                    Developer starting points
                   </p>
                   <p className="mt-1 text-sm leading-6 text-graphite">
-                    A deterministic first draft assembled by the API from
-                    indexed repository facts.
+                    Deterministic guidance assembled from indexed repository
+                    facts.
                   </p>
                 </div>
                 <BookOpen size={18} className="shrink-0 text-signal" />
@@ -1888,141 +1825,6 @@ function DocsPanel({
               </div>
             </section>
 
-            <section className="rounded-md border border-line bg-white p-4 shadow-sm">
-              <div className="flex items-start justify-between gap-4">
-                <div className="min-w-0">
-                  <p className="font-semibold text-ink">README draft</p>
-                  <p className="mt-1 text-sm leading-6 text-graphite">
-                    Generate a deterministic Markdown draft from indexed
-                    repository facts, paths, and symbols.
-                  </p>
-                </div>
-                <div className="flex shrink-0 items-center gap-2">
-                  {readmeDraft ? (
-                    <button
-                      type="button"
-                      onClick={copyReadmeDraft}
-                      className="inline-flex h-9 items-center gap-2 rounded-md border border-line bg-white px-3 text-sm font-medium text-graphite hover:border-signal hover:text-ink"
-                    >
-                      <Copy size={15} />
-                      {readmeCopyState === "copied" ? "Copied" : "Copy"}
-                    </button>
-                  ) : null}
-                  <button
-                    type="button"
-                    onClick={onGenerateReadmeDraft}
-                    disabled={isGeneratingReadmeDraft}
-                    className="inline-flex h-9 items-center gap-2 rounded-md bg-ink px-3 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    {isGeneratingReadmeDraft ? (
-                      <Loader2 size={15} className="animate-spin" />
-                    ) : (
-                      <BookOpen size={15} />
-                    )}
-                    Generate README draft
-                  </button>
-                </div>
-              </div>
-
-              {readmeDraftError ? (
-                <div className="mt-4 rounded-md border border-red-200 bg-red-50 p-3 text-sm leading-6 text-red-700">
-                  {readmeDraftError}
-                </div>
-              ) : null}
-
-              {readmeDraft ? (
-                <div className="mt-4 overflow-hidden rounded-md border border-line bg-cloud">
-                  <div className="flex items-center justify-between gap-3 border-b border-line bg-white px-4 py-3">
-                    <div className="min-w-0">
-                      <p className="truncate text-sm font-semibold text-ink">
-                        {readmeDraft.title}
-                      </p>
-                      <p className="mt-1 text-xs text-graphite">
-                        {readmeDraft.source} -{" "}
-                        {new Date(readmeDraft.generatedAt).toLocaleString()}
-                      </p>
-                    </div>
-                    <FileCode2 size={16} className="shrink-0 text-signal" />
-                  </div>
-                  <pre className="max-h-[360px] overflow-auto whitespace-pre-wrap p-4 font-mono text-xs leading-6 text-ink">
-                    {readmeDraft.markdown}
-                  </pre>
-                </div>
-              ) : (
-                <div className="mt-4 rounded-md border border-dashed border-line bg-cloud/70 p-4 text-sm leading-6 text-graphite">
-                  No README draft has been generated for this analysis yet.
-                </div>
-              )}
-            </section>
-
-            <section className="rounded-md border border-line bg-white p-4 shadow-sm">
-              <div className="flex items-start justify-between gap-4">
-                <div className="min-w-0">
-                  <p className="font-semibold text-ink">Architecture notes</p>
-                  <p className="mt-1 text-sm leading-6 text-graphite">
-                    Generate deterministic notes from paths, language signals,
-                    connected symbols, and architecture gaps.
-                  </p>
-                </div>
-                <div className="flex shrink-0 items-center gap-2">
-                  {architectureNotes ? (
-                    <button
-                      type="button"
-                      onClick={copyArchitectureNotes}
-                      className="inline-flex h-9 items-center gap-2 rounded-md border border-line bg-white px-3 text-sm font-medium text-graphite hover:border-signal hover:text-ink"
-                    >
-                      <Copy size={15} />
-                      {architectureCopyState === "copied" ? "Copied" : "Copy"}
-                    </button>
-                  ) : null}
-                  <button
-                    type="button"
-                    onClick={onGenerateArchitectureNotes}
-                    disabled={isGeneratingArchitectureNotes}
-                    className="inline-flex h-9 items-center gap-2 rounded-md bg-ink px-3 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    {isGeneratingArchitectureNotes ? (
-                      <Loader2 size={15} className="animate-spin" />
-                    ) : (
-                      <Workflow size={15} />
-                    )}
-                    Generate architecture notes
-                  </button>
-                </div>
-              </div>
-
-              {architectureNotesError ? (
-                <div className="mt-4 rounded-md border border-red-200 bg-red-50 p-3 text-sm leading-6 text-red-700">
-                  {architectureNotesError}
-                </div>
-              ) : null}
-
-              {architectureNotes ? (
-                <div className="mt-4 overflow-hidden rounded-md border border-line bg-cloud">
-                  <div className="flex items-center justify-between gap-3 border-b border-line bg-white px-4 py-3">
-                    <div className="min-w-0">
-                      <p className="truncate text-sm font-semibold text-ink">
-                        {architectureNotes.title}
-                      </p>
-                      <p className="mt-1 text-xs text-graphite">
-                        {architectureNotes.source} -{" "}
-                        {new Date(architectureNotes.generatedAt).toLocaleString()}
-                      </p>
-                    </div>
-                    <Workflow size={16} className="shrink-0 text-signal" />
-                  </div>
-                  <pre className="max-h-[360px] overflow-auto whitespace-pre-wrap p-4 font-mono text-xs leading-6 text-ink">
-                    {architectureNotes.markdown}
-                  </pre>
-                </div>
-              ) : (
-                <div className="mt-4 rounded-md border border-dashed border-line bg-cloud/70 p-4 text-sm leading-6 text-graphite">
-                  No architecture notes have been generated for this analysis
-                  yet.
-                </div>
-              )}
-            </section>
-
             <section className="grid grid-cols-[minmax(0,1fr)_320px] gap-4">
               <div className="rounded-md border border-line bg-white p-4 shadow-sm">
                 <div className="flex items-center justify-between gap-3">
@@ -2031,7 +1833,7 @@ function DocsPanel({
                       Architecture snapshot
                     </p>
                     <p className="mt-1 text-sm leading-6 text-graphite">
-                      Structure and documentation signals from indexed files.
+                      Structure and code signals from indexed files.
                     </p>
                   </div>
                   <Workflow size={18} className="shrink-0 text-signal" />
@@ -2117,35 +1919,45 @@ function DocsPanel({
               </div>
 
               <div className="rounded-md border border-line bg-white p-4 shadow-sm">
-                <p className="font-semibold text-ink">Documentation queue</p>
+                <p className="font-semibold text-ink">Repository health</p>
                 <p className="mt-1 text-sm leading-6 text-graphite">
-                  Agent-backed generation will attach to these surfaces next.
+                  Lightweight signals from the current analysis.
                 </p>
                 <div className="mt-4 grid gap-3">
-                  {summary.queuedSections.map((item) => (
+                  {[
+                    {
+                      label: "Analysis",
+                      value: summary.repository.analysisStatus,
+                    },
+                    {
+                      label: "Tests",
+                      value: summary.architecture.testFileCount
+                        ? `${summary.architecture.testFileCount} detected`
+                        : "Not detected",
+                    },
+                    {
+                      label: "Public API",
+                      value: summary.symbols.counts.exported
+                        ? `${summary.symbols.counts.exported} exported symbols`
+                        : "No exports indexed",
+                    },
+                    {
+                      label: "Relationships",
+                      value: summary.symbols.counts.connected
+                        ? `${summary.symbols.counts.connected} connected symbols`
+                        : "Sparse",
+                    },
+                  ].map((item) => (
                     <div
-                      key={item.title}
-                      className="rounded-md border border-dashed border-line bg-cloud/70 p-3 opacity-75"
+                      key={item.label}
+                      className="rounded-md border border-line bg-cloud/70 p-3"
                     >
-                      <div className="flex items-start gap-3">
-                        <FileCode2
-                          size={17}
-                          className="mt-0.5 shrink-0 text-graphite"
-                        />
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-2">
-                            <p className="truncate text-sm font-semibold text-ink">
-                              {item.title}
-                            </p>
-                            <span className="shrink-0 rounded bg-white px-1.5 py-0.5 text-[11px] font-semibold text-graphite">
-                              Queued
-                            </span>
-                          </div>
-                          <p className="mt-1 text-xs leading-5 text-graphite">
-                            {item.description}
-                          </p>
-                        </div>
-                      </div>
+                      <p className="text-xs font-medium uppercase tracking-wide text-graphite">
+                        {item.label}
+                      </p>
+                      <p className="mt-1 text-sm font-semibold text-ink">
+                        {item.value}
+                      </p>
                     </div>
                   ))}
                 </div>
@@ -2158,7 +1970,7 @@ function DocsPanel({
                   <p className="font-semibold text-ink">Symbol overview</p>
                   <p className="mt-1 text-sm leading-6 text-graphite">
                     Public interfaces and highly connected symbols that should
-                    anchor generated docs.
+                    help orient a developer.
                   </p>
                 </div>
                 <Braces size={18} className="shrink-0 text-signal" />
@@ -2252,7 +2064,7 @@ function DocsPanel({
           </div>
         ) : (
           <div className="rounded-md border border-line bg-white p-4 text-sm text-graphite">
-            Documentation summary is not available yet.
+            Repo Brief is not available yet.
           </div>
         )}
       </div>
@@ -2285,18 +2097,6 @@ export default function Home() {
   );
   const [isLoadingDocsSummary, setIsLoadingDocsSummary] = useState(false);
   const [docsSummaryError, setDocsSummaryError] = useState<string | null>(null);
-  const [readmeDraft, setReadmeDraft] = useState<DocsDraftResponse | null>(
-    null,
-  );
-  const [isGeneratingReadmeDraft, setIsGeneratingReadmeDraft] = useState(false);
-  const [readmeDraftError, setReadmeDraftError] = useState<string | null>(null);
-  const [architectureNotes, setArchitectureNotes] =
-    useState<DocsDraftResponse | null>(null);
-  const [isGeneratingArchitectureNotes, setIsGeneratingArchitectureNotes] =
-    useState(false);
-  const [architectureNotesError, setArchitectureNotesError] = useState<
-    string | null
-  >(null);
   const [symbolsResponse, setSymbolsResponse] =
     useState<SymbolsResponse | null>(null);
   const [selectedSymbolId, setSelectedSymbolId] = useState<string | null>(null);
@@ -2317,7 +2117,7 @@ export default function Home() {
   const [activeSymbolTab, setActiveSymbolTab] =
     useState<SymbolRelationshipTab>("references");
   const [activeWorkspaceTab, setActiveWorkspaceTab] =
-    useState<WorkspaceTab>("files");
+    useState<WorkspaceTab>("brief");
 
   const repository = job?.repository;
   const repositoryReady = job?.status === "COMPLETED" && Boolean(repository);
@@ -2341,7 +2141,6 @@ export default function Home() {
     selectedSymbolDetail ??
     symbolsResponse?.symbols.find((symbol) => symbol.id === selectedSymbolId) ??
     null;
-  const graphFocusedSymbol = selectedSymbol ?? symbolsResponse?.symbols[0] ?? null;
   const symbolOccurrenceLabels = useMemo(
     () => buildSymbolOccurrenceLabels(symbolsResponse?.symbols ?? []),
     [symbolsResponse],
@@ -2584,12 +2383,6 @@ export default function Home() {
       setDocsSummary(null);
       setDocsSummaryError(null);
       setIsLoadingDocsSummary(false);
-      setReadmeDraft(null);
-      setReadmeDraftError(null);
-      setIsGeneratingReadmeDraft(false);
-      setArchitectureNotes(null);
-      setArchitectureNotesError(null);
-      setIsGeneratingArchitectureNotes(false);
       return;
     }
 
@@ -2602,7 +2395,7 @@ export default function Home() {
         if (!response.ok) {
           const body = await response.json().catch(() => null);
           throw new Error(
-            body?.message ?? "Unable to load documentation summary.",
+            body?.message ?? "Unable to load Repo Brief.",
           );
         }
         return response.json() as Promise<DocsSummaryResponse>;
@@ -2618,7 +2411,7 @@ export default function Home() {
           setDocsSummaryError(
             err instanceof Error
               ? err.message
-              : "Unable to load documentation summary.",
+              : "Unable to load Repo Brief.",
           );
         }
       })
@@ -2673,12 +2466,6 @@ export default function Home() {
     setSearchError(null);
     setDocsSummary(null);
     setDocsSummaryError(null);
-    setReadmeDraft(null);
-    setReadmeDraftError(null);
-    setIsGeneratingReadmeDraft(false);
-    setArchitectureNotes(null);
-    setArchitectureNotesError(null);
-    setIsGeneratingArchitectureNotes(false);
     setSelectedFileSource(null);
     setFileSourceError(null);
     setIsLoadingFileSource(false);
@@ -2759,68 +2546,6 @@ export default function Home() {
     }
   }
 
-  async function generateReadmeDraft() {
-    if (!job?.repositoryId || !repositoryReady) return;
-
-    setIsGeneratingReadmeDraft(true);
-    setReadmeDraftError(null);
-
-    try {
-      const response = await fetch(
-        `${API_URL}/repositories/${job.repositoryId}/docs/readme-draft`,
-        {
-          method: "POST",
-        },
-      );
-
-      if (!response.ok) {
-        const body = await response.json().catch(() => null);
-        throw new Error(body?.message ?? "Unable to generate README draft.");
-      }
-
-      setReadmeDraft((await response.json()) as DocsDraftResponse);
-    } catch (err) {
-      setReadmeDraftError(
-        err instanceof Error ? err.message : "Unable to generate README draft.",
-      );
-    } finally {
-      setIsGeneratingReadmeDraft(false);
-    }
-  }
-
-  async function generateArchitectureNotes() {
-    if (!job?.repositoryId || !repositoryReady) return;
-
-    setIsGeneratingArchitectureNotes(true);
-    setArchitectureNotesError(null);
-
-    try {
-      const response = await fetch(
-        `${API_URL}/repositories/${job.repositoryId}/docs/architecture-notes`,
-        {
-          method: "POST",
-        },
-      );
-
-      if (!response.ok) {
-        const body = await response.json().catch(() => null);
-        throw new Error(
-          body?.message ?? "Unable to generate architecture notes.",
-        );
-      }
-
-      setArchitectureNotes((await response.json()) as DocsDraftResponse);
-    } catch (err) {
-      setArchitectureNotesError(
-        err instanceof Error
-          ? err.message
-          : "Unable to generate architecture notes.",
-      );
-    } finally {
-      setIsGeneratingArchitectureNotes(false);
-    }
-  }
-
   function focusSearchResult(result: SearchResult) {
     setActiveWorkspaceTab("files");
     setFileQuery("");
@@ -2869,7 +2594,7 @@ export default function Home() {
 
   function inspectSymbol(symbolId: string) {
     selectSymbol(symbolId);
-    setActiveWorkspaceTab("symbols");
+    setActiveWorkspaceTab("files");
   }
 
   const activeStepIndex = getStepIndex(job?.currentStep);
@@ -2890,15 +2615,8 @@ export default function Home() {
             </p>
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          <button className="inline-flex h-9 items-center gap-2 rounded-md border border-line bg-white px-3 text-sm font-medium text-graphite">
-            <ShieldCheck size={16} />
-            Security
-          </button>
-          <button className="inline-flex h-9 items-center gap-2 rounded-md bg-ink px-3 text-sm font-medium text-white">
-            <KeyRound size={16} />
-            GitHub OAuth
-          </button>
+        <div className="rounded-md border border-line bg-cloud px-3 py-1.5 text-xs font-medium text-graphite">
+          Repo understanding workspace
         </div>
       </header>
 
@@ -2987,8 +2705,8 @@ export default function Home() {
               Repository Workspace
             </h1>
             <p className="mt-1 max-w-2xl text-sm leading-6 text-graphite">
-              Paste a GitHub repository, analyze its structure, and turn the
-              result into a navigable engineering knowledge model.
+              Paste a GitHub repository, analyze its structure, explore files,
+              search the codebase, and prepare for file-backed Q&A.
             </p>
           </div>
 
@@ -3105,10 +2823,7 @@ export default function Home() {
 
           <div
             className={
-              activeWorkspaceTab === "files" ||
-              activeWorkspaceTab === "symbols"
-                ? "grid grid-cols-1 gap-4"
-                : "hidden"
+              activeWorkspaceTab === "files" ? "grid grid-cols-1 gap-4" : "hidden"
             }
           >
             <div
@@ -3205,11 +2920,7 @@ export default function Home() {
               </div>
             </div>
 
-            <div
-              className={`rounded-md border border-line bg-white ${
-                activeWorkspaceTab === "symbols" ? "" : "hidden"
-              }`}
-            >
+            <div className="hidden rounded-md border border-line bg-white">
               <div className="border-b border-line px-4 py-3">
                 <div className="flex items-center justify-between gap-3">
                   <div className="min-w-0">
@@ -3625,31 +3336,12 @@ export default function Home() {
             </div>
           ) : null}
 
-          {activeWorkspaceTab === "graph" ? (
-            <SymbolGraphPanel
-              repositoryReady={repositoryReady}
-              symbolsResponse={symbolsResponse}
-              focusedSymbol={graphFocusedSymbol}
-              onSelectSymbol={selectSymbol}
-              onInspectSymbol={inspectSymbol}
-              onOpenInFiles={openSymbolInFiles}
-            />
-          ) : null}
-
-          {activeWorkspaceTab === "docs" ? (
-            <DocsPanel
+          {activeWorkspaceTab === "brief" ? (
+            <RepoBriefPanel
               repositoryReady={repositoryReady}
               summary={docsSummary}
               isLoading={isLoadingDocsSummary}
               error={docsSummaryError}
-              readmeDraft={readmeDraft}
-              isGeneratingReadmeDraft={isGeneratingReadmeDraft}
-              readmeDraftError={readmeDraftError}
-              onGenerateReadmeDraft={generateReadmeDraft}
-              architectureNotes={architectureNotes}
-              isGeneratingArchitectureNotes={isGeneratingArchitectureNotes}
-              architectureNotesError={architectureNotesError}
-              onGenerateArchitectureNotes={generateArchitectureNotes}
               onInspectSymbol={inspectSymbol}
               onOpenInFiles={openSymbolInFiles}
             />
@@ -3657,49 +3349,68 @@ export default function Home() {
         </section>
 
         <aside className="flex min-h-0 flex-col border-l border-line bg-white p-4">
-          <div>
-            <p className="font-semibold">Intelligence rail</p>
-            <p className="mt-1 text-sm leading-6 text-graphite">
-              Agents and knowledge services attached to this repository.
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="font-semibold">DevLens AI</p>
+              <p className="mt-1 text-sm leading-6 text-graphite">
+                File-backed repository Q&A will live here.
+              </p>
+            </div>
+            <Sparkles size={18} className="shrink-0 text-signal" />
+          </div>
+
+          <div className="mt-4 rounded-md border border-line bg-cloud p-4">
+            <p className="text-sm font-semibold text-ink">
+              Ask about this repository
+            </p>
+            <p className="mt-2 text-sm leading-6 text-graphite">
+              DevLens AI will use Repo Brief data, search results, source files,
+              and symbols to answer questions with clickable citations.
             </p>
           </div>
 
-          <div className="mt-4 grid gap-3">
-            {modules.map((module) => {
-              const Icon = module.icon;
-              const active = module.name === "Repository Intelligence";
-              return (
-                <div
-                  key={module.name}
-                  className="rounded-md border border-line bg-white p-4"
+          <div className="mt-4 grid gap-2">
+            {[
+              "Where should I start?",
+              "What are the most important files?",
+              "Explain how this repo is structured.",
+            ].map((prompt) => (
+              <button
+                key={prompt}
+                type="button"
+                disabled
+                className="rounded-md border border-line bg-white p-3 text-left text-sm text-graphite opacity-70"
+              >
+                {prompt}
+              </button>
+            ))}
+          </div>
+
+          <div className="mt-auto pt-4">
+            <div className="rounded-md border border-line bg-cloud px-3 py-2">
+              <textarea
+                disabled
+                rows={3}
+                placeholder={
+                  repositoryReady
+                    ? "DevLens AI chat is coming next."
+                    : "Analyze a repository to enable DevLens AI."
+                }
+                className="w-full resize-none bg-transparent text-sm outline-none placeholder:text-graphite disabled:cursor-not-allowed"
+              />
+              <div className="mt-2 flex items-center justify-between">
+                <span className="text-xs text-graphite">
+                  Grounded answers with citations
+                </span>
+                <button
+                  type="button"
+                  disabled
+                  className="rounded-md bg-ink px-3 py-1.5 text-xs font-semibold text-white opacity-50"
                 >
-                  <div className="flex items-start justify-between gap-3">
-                    <Icon size={20} className="text-signal" />
-                    <span
-                      className={`rounded px-2 py-1 text-xs font-medium ${
-                        active
-                          ? "bg-mint/10 text-mint"
-                          : "bg-cloud text-graphite"
-                      }`}
-                    >
-                      {module.status}
-                    </span>
-                  </div>
-                  <p className="mt-3 font-medium">{module.name}</p>
-                  <p className="mt-1 text-sm leading-6 text-graphite">
-                    {module.name === "Repository Intelligence"
-                      ? repositoryReady
-                        ? "Repository structure, symbols, and searchable chunks are available."
-                        : "Ready to summarize repository metadata after analysis."
-                      : module.name === "Knowledge Graph"
-                        ? symbolsResponse?.count
-                          ? `${symbolsResponse.count} symbols indexed for graph expansion.`
-                          : "Pending symbol and relationship indexing."
-                        : "Queued for a future analysis milestone."}
-                  </p>
-                </div>
-              );
-            })}
+                  Ask
+                </button>
+              </div>
+            </div>
           </div>
         </aside>
       </section>
