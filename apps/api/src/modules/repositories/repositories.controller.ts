@@ -566,6 +566,176 @@ function buildReadmeDraft(context: Awaited<ReturnType<typeof loadDocsContext>>) 
   };
 }
 
+function describePathResponsibility(path: string) {
+  const lowerPath = path.toLowerCase();
+  if (lowerPath.includes("controller")) return "HTTP routing or request handling";
+  if (lowerPath.includes("service")) return "business logic or orchestration";
+  if (lowerPath.includes("worker")) return "background job processing";
+  if (lowerPath.includes("schema") || lowerPath.includes("prisma")) return "data model or persistence contract";
+  if (lowerPath.includes("test") || lowerPath.includes("spec")) return "behavior verification";
+  if (lowerPath.includes("config") || lowerPath.includes("tsconfig")) return "project configuration";
+  if (lowerPath.includes("package.json")) return "package metadata and script/dependency definition";
+  if (lowerPath.includes("readme") || lowerPath.startsWith("docs/")) return "documentation surface";
+  if (lowerPath.startsWith("apps/")) return "application boundary";
+  if (lowerPath.startsWith("packages/")) return "shared package boundary";
+  if (lowerPath.startsWith("src/")) return "core source module";
+  return "indexed repository component";
+}
+
+function buildModuleResponsibilityLines(files: Array<{ path: string }>) {
+  const responsibilities = new Map<string, Set<string>>();
+
+  for (const file of files) {
+    const [root, second] = file.path.split("/");
+    const key = second && (root === "apps" || root === "packages")
+      ? `${root}/${second}`
+      : root;
+    if (!key) continue;
+
+    const current = responsibilities.get(key) ?? new Set<string>();
+    current.add(describePathResponsibility(file.path));
+    responsibilities.set(key, current);
+  }
+
+  return [...responsibilities.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .slice(0, 8)
+    .map(([modulePath, descriptions]) => {
+      const description = [...descriptions].slice(0, 3).join(", ");
+      return `\`${modulePath}\` appears to cover ${description}.`;
+    });
+}
+
+function buildArchitectureRiskLines(context: Awaited<ReturnType<typeof loadDocsContext>>) {
+  const risks: string[] = [];
+
+  if (!context.importantPaths.length) {
+    risks.push("No conventionally important paths were detected, so architecture entry points may need manual annotation.");
+  }
+  if (!context.exportedSymbols.length) {
+    risks.push("No exported symbols were identified, which limits deterministic public API documentation.");
+  }
+  if (!context.connectedSymbols.length) {
+    risks.push("No symbol relationships were indexed, so dependency flow is currently sparse.");
+  }
+  if (!context.testFileCount) {
+    risks.push("No test files were detected from indexed paths, leaving behavior and edge-case documentation without test anchors.");
+  }
+  if (context.generatedFileCount) {
+    risks.push(`${context.generatedFileCount} generated file${context.generatedFileCount === 1 ? "" : "s"} were detected and should be separated from hand-authored architecture notes.`);
+  }
+  if (!context.repository.detectedFrameworks.length) {
+    risks.push("No framework signal was confirmed, so framework-level architecture assumptions should stay explicit.");
+  }
+
+  return risks;
+}
+
+function buildArchitectureNotes(context: Awaited<ReturnType<typeof loadDocsContext>>) {
+  const {
+    repository,
+    files,
+    topLanguages,
+    importantPaths,
+    testFileCount,
+    generatedFileCount,
+    exportedSymbols,
+    connectedSymbols,
+    overviewText
+  } = context;
+  const title = `${repository.owner}/${repository.name} architecture notes`;
+  const languageLines = topLanguages
+    .slice(0, 5)
+    .map((item) => `${item.language}: ${item.files} file${item.files === 1 ? "" : "s"}`);
+  const importantPathLines = importantPaths
+    .slice(0, 8)
+    .map((file) => `\`${file.path}\` - ${describePathResponsibility(file.path)}`);
+  const responsibilityLines = buildModuleResponsibilityLines(files);
+  const connectedSymbolLines = connectedSymbols
+    .slice(0, 8)
+    .map(
+      (symbol) =>
+        `\`${symbol.name}\` (${symbol.kind}) in \`${symbol.filePath}\` has ${symbol.connectionCount} indexed link${
+          symbol.connectionCount === 1 ? "" : "s"
+        }.`
+    );
+  const exportedSymbolLines = exportedSymbols
+    .slice(0, 8)
+    .map((symbol) => `\`${symbol.name}\` (${symbol.kind}) in \`${symbol.filePath}\`.`);
+  const riskLines = buildArchitectureRiskLines(context);
+
+  const markdown = [
+    `# ${title}`,
+    "",
+    "## Repository overview",
+    "",
+    overviewText,
+    "",
+    "## Language and stack signals",
+    "",
+    markdownList(languageLines, "Language signals will appear after indexing."),
+    "",
+    `Framework signal: ${
+      repository.detectedFrameworks.length
+        ? repository.detectedFrameworks.join(", ")
+        : "No framework signal detected"
+    }.`,
+    "",
+    "## Important paths",
+    "",
+    markdownList(importantPathLines, "Important paths will appear after file indexing."),
+    "",
+    "## Module responsibility guesses",
+    "",
+    markdownList(
+      responsibilityLines,
+      "Module responsibilities need manual annotation once more paths are indexed."
+    ),
+    "",
+    "## Symbol architecture signals",
+    "",
+    "### Most connected symbols",
+    "",
+    markdownList(
+      connectedSymbolLines,
+      "No connected symbols were identified in the current analysis."
+    ),
+    "",
+    "### Exported symbols",
+    "",
+    markdownList(
+      exportedSymbolLines,
+      "No exported symbols were identified in the current analysis."
+    ),
+    "",
+    "## Test and generated file signals",
+    "",
+    `- Test files detected: ${testFileCount}`,
+    `- Generated files detected: ${generatedFileCount}`,
+    "",
+    "## Architecture risks and gaps",
+    "",
+    markdownList(
+      riskLines,
+      "No deterministic architecture gaps were detected from the current signals."
+    ),
+    "",
+    "## Next architecture documentation steps",
+    "",
+    "- Confirm the actual responsibility of each important path with maintainers or source comments.",
+    "- Add a high-level module map for entry points, shared packages, workers, and persistence boundaries.",
+    "- Link highly connected symbols to their callers, owners, and expected runtime behavior.",
+    "- Separate generated files, test fixtures, and hand-authored source in the architecture narrative.",
+    "",
+    "<!-- Generated by DevLens AI deterministic architecture notes. -->"
+  ].join("\n");
+
+  return {
+    title,
+    markdown
+  };
+}
+
 const symbolReferenceInclude = {
   outgoingReferences: {
     orderBy: { kind: "asc" as const },
@@ -920,6 +1090,20 @@ export class RepositoriesController {
   async readmeDraft(@Param("id") id: string) {
     const context = await loadDocsContext(id);
     const draft = buildReadmeDraft(context);
+
+    return {
+      repositoryId: id,
+      title: draft.title,
+      markdown: draft.markdown,
+      generatedAt: new Date().toISOString(),
+      source: "deterministic"
+    };
+  }
+
+  @Post(":id/docs/architecture-notes")
+  async architectureNotes(@Param("id") id: string) {
+    const context = await loadDocsContext(id);
+    const draft = buildArchitectureNotes(context);
 
     return {
       repositoryId: id,

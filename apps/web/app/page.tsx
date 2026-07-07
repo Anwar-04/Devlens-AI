@@ -240,7 +240,7 @@ type DocsSummaryResponse = {
   }>;
 };
 
-type ReadmeDraftResponse = {
+type DocsDraftResponse = {
   repositoryId: string;
   title: string;
   markdown: string;
@@ -1708,6 +1708,10 @@ function DocsPanel({
   isGeneratingReadmeDraft,
   readmeDraftError,
   onGenerateReadmeDraft,
+  architectureNotes,
+  isGeneratingArchitectureNotes,
+  architectureNotesError,
+  onGenerateArchitectureNotes,
   onInspectSymbol,
   onOpenInFiles,
 }: {
@@ -1715,22 +1719,36 @@ function DocsPanel({
   summary: DocsSummaryResponse | null;
   isLoading: boolean;
   error: string | null;
-  readmeDraft: ReadmeDraftResponse | null;
+  readmeDraft: DocsDraftResponse | null;
   isGeneratingReadmeDraft: boolean;
   readmeDraftError: string | null;
   onGenerateReadmeDraft: () => void;
+  architectureNotes: DocsDraftResponse | null;
+  isGeneratingArchitectureNotes: boolean;
+  architectureNotesError: string | null;
+  onGenerateArchitectureNotes: () => void;
   onInspectSymbol: (symbolId: string) => void;
   onOpenInFiles: (symbol: { filePath: string }) => void;
 }) {
   const [readmeCopyState, setReadmeCopyState] = useState<"idle" | "copied">(
     "idle",
   );
+  const [architectureCopyState, setArchitectureCopyState] = useState<
+    "idle" | "copied"
+  >("idle");
 
   async function copyReadmeDraft() {
     if (!readmeDraft) return;
     await navigator.clipboard.writeText(readmeDraft.markdown);
     setReadmeCopyState("copied");
     window.setTimeout(() => setReadmeCopyState("idle"), 1400);
+  }
+
+  async function copyArchitectureNotes() {
+    if (!architectureNotes) return;
+    await navigator.clipboard.writeText(architectureNotes.markdown);
+    setArchitectureCopyState("copied");
+    window.setTimeout(() => setArchitectureCopyState("idle"), 1400);
   }
 
   return (
@@ -1933,6 +1951,74 @@ function DocsPanel({
               ) : (
                 <div className="mt-4 rounded-md border border-dashed border-line bg-cloud/70 p-4 text-sm leading-6 text-graphite">
                   No README draft has been generated for this analysis yet.
+                </div>
+              )}
+            </section>
+
+            <section className="rounded-md border border-line bg-white p-4 shadow-sm">
+              <div className="flex items-start justify-between gap-4">
+                <div className="min-w-0">
+                  <p className="font-semibold text-ink">Architecture notes</p>
+                  <p className="mt-1 text-sm leading-6 text-graphite">
+                    Generate deterministic notes from paths, language signals,
+                    connected symbols, and architecture gaps.
+                  </p>
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  {architectureNotes ? (
+                    <button
+                      type="button"
+                      onClick={copyArchitectureNotes}
+                      className="inline-flex h-9 items-center gap-2 rounded-md border border-line bg-white px-3 text-sm font-medium text-graphite hover:border-signal hover:text-ink"
+                    >
+                      <Copy size={15} />
+                      {architectureCopyState === "copied" ? "Copied" : "Copy"}
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    onClick={onGenerateArchitectureNotes}
+                    disabled={isGeneratingArchitectureNotes}
+                    className="inline-flex h-9 items-center gap-2 rounded-md bg-ink px-3 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {isGeneratingArchitectureNotes ? (
+                      <Loader2 size={15} className="animate-spin" />
+                    ) : (
+                      <Workflow size={15} />
+                    )}
+                    Generate architecture notes
+                  </button>
+                </div>
+              </div>
+
+              {architectureNotesError ? (
+                <div className="mt-4 rounded-md border border-red-200 bg-red-50 p-3 text-sm leading-6 text-red-700">
+                  {architectureNotesError}
+                </div>
+              ) : null}
+
+              {architectureNotes ? (
+                <div className="mt-4 overflow-hidden rounded-md border border-line bg-cloud">
+                  <div className="flex items-center justify-between gap-3 border-b border-line bg-white px-4 py-3">
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-semibold text-ink">
+                        {architectureNotes.title}
+                      </p>
+                      <p className="mt-1 text-xs text-graphite">
+                        {architectureNotes.source} -{" "}
+                        {new Date(architectureNotes.generatedAt).toLocaleString()}
+                      </p>
+                    </div>
+                    <Workflow size={16} className="shrink-0 text-signal" />
+                  </div>
+                  <pre className="max-h-[360px] overflow-auto whitespace-pre-wrap p-4 font-mono text-xs leading-6 text-ink">
+                    {architectureNotes.markdown}
+                  </pre>
+                </div>
+              ) : (
+                <div className="mt-4 rounded-md border border-dashed border-line bg-cloud/70 p-4 text-sm leading-6 text-graphite">
+                  No architecture notes have been generated for this analysis
+                  yet.
                 </div>
               )}
             </section>
@@ -2199,11 +2285,18 @@ export default function Home() {
   );
   const [isLoadingDocsSummary, setIsLoadingDocsSummary] = useState(false);
   const [docsSummaryError, setDocsSummaryError] = useState<string | null>(null);
-  const [readmeDraft, setReadmeDraft] = useState<ReadmeDraftResponse | null>(
+  const [readmeDraft, setReadmeDraft] = useState<DocsDraftResponse | null>(
     null,
   );
   const [isGeneratingReadmeDraft, setIsGeneratingReadmeDraft] = useState(false);
   const [readmeDraftError, setReadmeDraftError] = useState<string | null>(null);
+  const [architectureNotes, setArchitectureNotes] =
+    useState<DocsDraftResponse | null>(null);
+  const [isGeneratingArchitectureNotes, setIsGeneratingArchitectureNotes] =
+    useState(false);
+  const [architectureNotesError, setArchitectureNotesError] = useState<
+    string | null
+  >(null);
   const [symbolsResponse, setSymbolsResponse] =
     useState<SymbolsResponse | null>(null);
   const [selectedSymbolId, setSelectedSymbolId] = useState<string | null>(null);
@@ -2494,6 +2587,9 @@ export default function Home() {
       setReadmeDraft(null);
       setReadmeDraftError(null);
       setIsGeneratingReadmeDraft(false);
+      setArchitectureNotes(null);
+      setArchitectureNotesError(null);
+      setIsGeneratingArchitectureNotes(false);
       return;
     }
 
@@ -2580,6 +2676,9 @@ export default function Home() {
     setReadmeDraft(null);
     setReadmeDraftError(null);
     setIsGeneratingReadmeDraft(false);
+    setArchitectureNotes(null);
+    setArchitectureNotesError(null);
+    setIsGeneratingArchitectureNotes(false);
     setSelectedFileSource(null);
     setFileSourceError(null);
     setIsLoadingFileSource(false);
@@ -2679,13 +2778,46 @@ export default function Home() {
         throw new Error(body?.message ?? "Unable to generate README draft.");
       }
 
-      setReadmeDraft((await response.json()) as ReadmeDraftResponse);
+      setReadmeDraft((await response.json()) as DocsDraftResponse);
     } catch (err) {
       setReadmeDraftError(
         err instanceof Error ? err.message : "Unable to generate README draft.",
       );
     } finally {
       setIsGeneratingReadmeDraft(false);
+    }
+  }
+
+  async function generateArchitectureNotes() {
+    if (!job?.repositoryId || !repositoryReady) return;
+
+    setIsGeneratingArchitectureNotes(true);
+    setArchitectureNotesError(null);
+
+    try {
+      const response = await fetch(
+        `${API_URL}/repositories/${job.repositoryId}/docs/architecture-notes`,
+        {
+          method: "POST",
+        },
+      );
+
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new Error(
+          body?.message ?? "Unable to generate architecture notes.",
+        );
+      }
+
+      setArchitectureNotes((await response.json()) as DocsDraftResponse);
+    } catch (err) {
+      setArchitectureNotesError(
+        err instanceof Error
+          ? err.message
+          : "Unable to generate architecture notes.",
+      );
+    } finally {
+      setIsGeneratingArchitectureNotes(false);
     }
   }
 
@@ -3514,6 +3646,10 @@ export default function Home() {
               isGeneratingReadmeDraft={isGeneratingReadmeDraft}
               readmeDraftError={readmeDraftError}
               onGenerateReadmeDraft={generateReadmeDraft}
+              architectureNotes={architectureNotes}
+              isGeneratingArchitectureNotes={isGeneratingArchitectureNotes}
+              architectureNotesError={architectureNotesError}
+              onGenerateArchitectureNotes={generateArchitectureNotes}
               onInspectSymbol={inspectSymbol}
               onOpenInFiles={openSymbolInFiles}
             />
