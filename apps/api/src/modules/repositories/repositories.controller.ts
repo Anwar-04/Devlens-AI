@@ -17,6 +17,26 @@ interface CreateRepositoryRequest {
 }
 
 const REDIS_URL = process.env.REDIS_URL ?? "redis://localhost:6379";
+const TEST_FILE_PATTERN =
+  /(^|\/)(__tests__|tests?)\/|(\.|-)(test|spec)\.[^.]+$/i;
+const DOCS_QUEUED_SECTIONS = [
+  {
+    title: "README summary",
+    description: "Condensed project overview from README and indexed docs."
+  },
+  {
+    title: "Architecture notes",
+    description: "Generated system map, boundaries, and module responsibilities."
+  },
+  {
+    title: "API/reference docs",
+    description: "Symbol and public interface documentation from code intelligence."
+  },
+  {
+    title: "Explain repository",
+    description: "Guided narrative for onboarding and repository Q&A."
+  }
+];
 
 function parseGitHubUrl(url: string): { owner: string; name: string; normalizedUrl: string } {
   const trimmed = url.trim();
@@ -225,6 +245,105 @@ function buildMergedSourceLines(
   return [...linesByNumber.values()].sort(
     (left, right) => left.lineNumber - right.lineNumber
   );
+}
+
+function buildDocsLanguageSummary(
+  files: Array<{ language: string | null; sizeBytes: number }>
+) {
+  const totals = new Map<string, { files: number; sizeBytes: number }>();
+
+  files.forEach((file) => {
+    const language = file.language ?? "Other";
+    const current = totals.get(language) ?? { files: 0, sizeBytes: 0 };
+    totals.set(language, {
+      files: current.files + 1,
+      sizeBytes: current.sizeBytes + file.sizeBytes
+    });
+  });
+
+  return [...totals.entries()]
+    .map(([language, summary]) => ({ language, ...summary }))
+    .sort((left, right) => {
+      if (left.language === "Other") return 1;
+      if (right.language === "Other") return -1;
+      return (
+        right.files - left.files || left.language.localeCompare(right.language)
+      );
+    });
+}
+
+function buildDocsImportantPaths(files: Array<{ path: string }>) {
+  const priorityPatterns = [
+    /^README(\.|$)/i,
+    /^package\.json$/i,
+    /^src\/index\./i,
+    /^tsconfig\.json$/i,
+    /^apps\//i,
+    /^packages\//i,
+    /^src\//i,
+    /^docs\//i,
+    /config\./i
+  ];
+
+  return files
+    .filter((file) => priorityPatterns.some((pattern) => pattern.test(file.path)))
+    .sort((left, right) => {
+      const leftTest = TEST_FILE_PATTERN.test(left.path);
+      const rightTest = TEST_FILE_PATTERN.test(right.path);
+      if (leftTest !== rightTest) return leftTest ? 1 : -1;
+
+      const leftIndex = priorityPatterns.findIndex((pattern) =>
+        pattern.test(left.path)
+      );
+      const rightIndex = priorityPatterns.findIndex((pattern) =>
+        pattern.test(right.path)
+      );
+      return leftIndex - rightIndex || left.path.localeCompare(right.path);
+    })
+    .slice(0, 6);
+}
+
+function getDocsSymbolConnectionCount(symbol: {
+  outgoingReferences: Array<{ kind: "REFERENCE" | "CALL" }>;
+  incomingReferences: Array<{ kind: "REFERENCE" | "CALL" }>;
+}) {
+  return symbol.outgoingReferences.length + symbol.incomingReferences.length;
+}
+
+function serializeDocsSymbol(symbol: {
+  id: string;
+  name: string;
+  kind: string;
+  startLine: number;
+  endLine: number;
+  signature: string | null;
+  visibility: string | null;
+  file: { path: string };
+  outgoingReferences: Array<{ kind: "REFERENCE" | "CALL" }>;
+  incomingReferences: Array<{ kind: "REFERENCE" | "CALL" }>;
+}) {
+  const outgoingCalls = symbol.outgoingReferences.filter(
+    (reference) => reference.kind === "CALL"
+  ).length;
+  const outgoingReferences = symbol.outgoingReferences.filter(
+    (reference) => reference.kind === "REFERENCE"
+  ).length;
+  const incomingReferences = symbol.incomingReferences.length;
+
+  return {
+    id: symbol.id,
+    name: symbol.name,
+    kind: symbol.kind,
+    filePath: symbol.file.path,
+    startLine: symbol.startLine,
+    endLine: symbol.endLine,
+    signature: symbol.signature,
+    visibility: symbol.visibility,
+    connectionCount: outgoingCalls + outgoingReferences + incomingReferences,
+    outgoingCalls,
+    outgoingReferences,
+    incomingReferences
+  };
 }
 
 const symbolReferenceInclude = {
@@ -512,6 +631,153 @@ export class RepositoriesController {
         previewStartLine: previewLines[0]?.lineNumber ?? null,
         previewEndLine: previewLines.at(-1)?.lineNumber ?? null
       }
+    };
+  }
+
+  @Get(":id/docs/summary")
+  async docsSummary(@Param("id") id: string) {
+    const repository = await db.repository.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        owner: true,
+        name: true,
+        url: true,
+        detectedLanguages: true,
+        detectedFrameworks: true,
+        fileCount: true,
+        totalSizeBytes: true,
+        analysisStatus: true,
+        cloneStatus: true
+      }
+    });
+
+    if (!repository) {
+      throw new NotFoundException("Repository not found");
+    }
+
+    const [files, symbols] = await Promise.all([
+      db.repositoryFile.findMany({
+        where: { repositoryId: id },
+        orderBy: { path: "asc" },
+        select: {
+          id: true,
+          path: true,
+          language: true,
+          sizeBytes: true,
+          isGenerated: true,
+          isTest: true
+        }
+      }),
+      db.symbol.findMany({
+        where: { repositoryId: id },
+        orderBy: [{ file: { path: "asc" } }, { startLine: "asc" }, { name: "asc" }],
+        include: {
+          file: {
+            select: {
+              path: true
+            }
+          },
+          outgoingReferences: {
+            select: {
+              kind: true
+            }
+          },
+          incomingReferences: {
+            select: {
+              kind: true
+            }
+          }
+        }
+      })
+    ]);
+
+    const topLanguages = buildDocsLanguageSummary(files);
+    const importantPaths = buildDocsImportantPaths(files).map((file) => ({
+      path: file.path
+    }));
+    const testFileCount = files.filter(
+      (file) => file.isTest || TEST_FILE_PATTERN.test(file.path)
+    ).length;
+    const generatedFileCount = files.filter((file) => file.isGenerated).length;
+    const exportedSymbols = symbols
+      .filter((symbol) => symbol.visibility === "exported")
+      .map(serializeDocsSymbol);
+    const connectedSymbols = symbols
+      .filter((symbol) => getDocsSymbolConnectionCount(symbol) > 0)
+      .sort(
+        (left, right) =>
+          getDocsSymbolConnectionCount(right) -
+            getDocsSymbolConnectionCount(left) ||
+          left.name.localeCompare(right.name)
+      )
+      .slice(0, 8)
+      .map(serializeDocsSymbol);
+    const primaryLanguage =
+      topLanguages.find((language) => language.language !== "Other") ??
+      topLanguages[0];
+    const frameworkSummary = repository.detectedFrameworks.length
+      ? repository.detectedFrameworks.join(", ")
+      : "No framework signal has been confirmed yet.";
+    const publicSymbolNames = exportedSymbols
+      .slice(0, 5)
+      .map((symbol) => symbol.name);
+    const keyFileNames = importantPaths.slice(0, 4).map((file) => file.path);
+    const overviewText = `${repository.owner}/${repository.name} is indexed as a ${
+      primaryLanguage?.language ?? "code"
+    } repository with ${repository.fileCount} files and ${
+      symbols.length
+    } parser-backed symbols. ${frameworkSummary}`;
+
+    return {
+      repository,
+      overview: {
+        text: overviewText,
+        primaryLanguage: primaryLanguage?.language ?? null,
+        frameworkSummary
+      },
+      architecture: {
+        topLanguages,
+        importantPaths,
+        testFileCount,
+        generatedFileCount
+      },
+      symbols: {
+        exported: exportedSymbols.slice(0, 12),
+        mostConnected: connectedSymbols,
+        counts: {
+          total: symbols.length,
+          exported: exportedSymbols.length,
+          connected: symbols.filter(
+            (symbol) => getDocsSymbolConnectionCount(symbol) > 0
+          ).length
+        }
+      },
+      docsPreview: [
+        {
+          title: "Repository Overview",
+          body: overviewText
+        },
+        {
+          title: "Key Files",
+          body: keyFileNames.length
+            ? `Start with ${keyFileNames.join(", ")}. These paths look central based on repository conventions and indexed structure.`
+            : "Key files will appear once the repository tree is indexed."
+        },
+        {
+          title: "Public Symbols",
+          body: publicSymbolNames.length
+            ? `Public documentation should begin with ${publicSymbolNames.join(", ")}. These exported symbols are available for reference docs and examples.`
+            : "No exported symbols have been identified yet."
+        },
+        {
+          title: "Testing Signals",
+          body: testFileCount
+            ? `${testFileCount} test file${testFileCount === 1 ? "" : "s"} were detected. Test coverage signals can guide usage examples and behavior notes.`
+            : "No test files were detected from the indexed paths."
+        }
+      ],
+      queuedSections: DOCS_QUEUED_SECTIONS
     };
   }
 
