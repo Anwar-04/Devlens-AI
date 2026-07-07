@@ -346,6 +346,226 @@ function serializeDocsSymbol(symbol: {
   };
 }
 
+async function loadDocsContext(id: string) {
+  const repository = await db.repository.findUnique({
+    where: { id },
+    select: {
+      id: true,
+      owner: true,
+      name: true,
+      url: true,
+      detectedLanguages: true,
+      detectedFrameworks: true,
+      fileCount: true,
+      totalSizeBytes: true,
+      analysisStatus: true,
+      cloneStatus: true
+    }
+  });
+
+  if (!repository) {
+    throw new NotFoundException("Repository not found");
+  }
+
+  const [files, symbols] = await Promise.all([
+    db.repositoryFile.findMany({
+      where: { repositoryId: id },
+      orderBy: { path: "asc" },
+      select: {
+        id: true,
+        path: true,
+        language: true,
+        sizeBytes: true,
+        isGenerated: true,
+        isTest: true
+      }
+    }),
+    db.symbol.findMany({
+      where: { repositoryId: id },
+      orderBy: [{ file: { path: "asc" } }, { startLine: "asc" }, { name: "asc" }],
+      include: {
+        file: {
+          select: {
+            path: true
+          }
+        },
+        outgoingReferences: {
+          select: {
+            kind: true
+          }
+        },
+        incomingReferences: {
+          select: {
+            kind: true
+          }
+        }
+      }
+    })
+  ]);
+
+  const topLanguages = buildDocsLanguageSummary(files);
+  const importantPaths = buildDocsImportantPaths(files).map((file) => ({
+    path: file.path
+  }));
+  const testFileCount = files.filter(
+    (file) => file.isTest || TEST_FILE_PATTERN.test(file.path)
+  ).length;
+  const generatedFileCount = files.filter((file) => file.isGenerated).length;
+  const exportedSymbols = symbols
+    .filter((symbol) => symbol.visibility === "exported")
+    .map(serializeDocsSymbol);
+  const connectedSymbols = symbols
+    .filter((symbol) => getDocsSymbolConnectionCount(symbol) > 0)
+    .sort(
+      (left, right) =>
+        getDocsSymbolConnectionCount(right) -
+          getDocsSymbolConnectionCount(left) ||
+        left.name.localeCompare(right.name)
+    )
+    .slice(0, 8)
+    .map(serializeDocsSymbol);
+  const primaryLanguage =
+    topLanguages.find((language) => language.language !== "Other") ??
+    topLanguages[0];
+  const frameworkSummary = repository.detectedFrameworks.length
+    ? repository.detectedFrameworks.join(", ")
+    : "No framework signal has been confirmed yet.";
+  const overviewText = `${repository.owner}/${repository.name} is indexed as a ${
+    primaryLanguage?.language ?? "code"
+  } repository with ${repository.fileCount} files and ${
+    symbols.length
+  } parser-backed symbols. ${frameworkSummary}`;
+
+  return {
+    repository,
+    files,
+    symbols,
+    topLanguages,
+    importantPaths,
+    testFileCount,
+    generatedFileCount,
+    exportedSymbols,
+    connectedSymbols,
+    primaryLanguage,
+    frameworkSummary,
+    overviewText
+  };
+}
+
+function markdownList(values: string[], fallback: string) {
+  return values.length
+    ? values.map((value) => `- ${value}`).join("\n")
+    : `- ${fallback}`;
+}
+
+function buildReadmeDraft(context: Awaited<ReturnType<typeof loadDocsContext>>) {
+  const {
+    repository,
+    topLanguages,
+    importantPaths,
+    testFileCount,
+    generatedFileCount,
+    exportedSymbols,
+    connectedSymbols,
+    overviewText
+  } = context;
+  const title = `${repository.owner}/${repository.name}`;
+  const languageLines = topLanguages
+    .slice(0, 5)
+    .map((item) => `${item.language}: ${item.files} file${item.files === 1 ? "" : "s"}`);
+  const importantPathLines = importantPaths
+    .slice(0, 6)
+    .map((file) => `${file.path}`);
+  const exportedSymbolLines = exportedSymbols
+    .slice(0, 8)
+    .map(
+      (symbol) =>
+        `\`${symbol.name}\` (${symbol.kind}) in \`${symbol.filePath}\` lines ${symbol.startLine}-${symbol.endLine}`
+    );
+  const connectedSymbolLines = connectedSymbols
+    .slice(0, 5)
+    .map(
+      (symbol) =>
+        `\`${symbol.name}\` has ${symbol.connectionCount} indexed link${
+          symbol.connectionCount === 1 ? "" : "s"
+        }`
+    );
+
+  const markdown = [
+    `# ${title}`,
+    "",
+    "## Overview",
+    "",
+    overviewText,
+    "",
+    "## Repository facts",
+    "",
+    `- Repository: ${repository.url}`,
+    `- Analysis status: ${repository.analysisStatus}`,
+    `- Files indexed: ${repository.fileCount}`,
+    `- Parser-backed symbols: ${context.symbols.length}`,
+    `- Primary language: ${context.primaryLanguage?.language ?? "Pending"}`,
+    `- Frameworks: ${
+      repository.detectedFrameworks.length
+        ? repository.detectedFrameworks.join(", ")
+        : "No framework signal detected"
+    }`,
+    "",
+    "## Architecture and important paths",
+    "",
+    "### Top languages",
+    "",
+    markdownList(languageLines, "Language signals will appear after indexing."),
+    "",
+    "### Important paths",
+    "",
+    markdownList(
+      importantPathLines.map((path) => `\`${path}\``),
+      "Important paths will appear after file indexing."
+    ),
+    "",
+    "## Public API and symbols",
+    "",
+    "### Exported symbols",
+    "",
+    markdownList(
+      exportedSymbolLines,
+      "No exported symbols were identified in the current analysis."
+    ),
+    "",
+    "### Highly connected symbols",
+    "",
+    markdownList(
+      connectedSymbolLines,
+      "No symbol relationships were identified in the current analysis."
+    ),
+    "",
+    "## Testing signals",
+    "",
+    testFileCount
+      ? `${testFileCount} test file${
+          testFileCount === 1 ? "" : "s"
+        } were detected. Use these tests to guide examples, expected behavior, and edge-case documentation.`
+      : "No test files were detected from the indexed repository paths.",
+    "",
+    `Generated files detected: ${generatedFileCount}.`,
+    "",
+    "## Next documentation steps",
+    "",
+    "- Expand the overview with project-specific installation and usage details.",
+    "- Add examples for the exported symbols that users are most likely to call.",
+    "- Document important paths and module responsibilities in more detail.",
+    "- Connect test cases to behavior notes and edge cases.",
+    "",
+    "<!-- Generated by DevLens AI deterministic documentation draft. -->"
+  ].join("\n");
+
+  return {
+    title,
+    markdown
+  };
+}
+
 const symbolReferenceInclude = {
   outgoingReferences: {
     orderBy: { kind: "asc" as const },
@@ -636,119 +856,34 @@ export class RepositoriesController {
 
   @Get(":id/docs/summary")
   async docsSummary(@Param("id") id: string) {
-    const repository = await db.repository.findUnique({
-      where: { id },
-      select: {
-        id: true,
-        owner: true,
-        name: true,
-        url: true,
-        detectedLanguages: true,
-        detectedFrameworks: true,
-        fileCount: true,
-        totalSizeBytes: true,
-        analysisStatus: true,
-        cloneStatus: true
-      }
-    });
-
-    if (!repository) {
-      throw new NotFoundException("Repository not found");
-    }
-
-    const [files, symbols] = await Promise.all([
-      db.repositoryFile.findMany({
-        where: { repositoryId: id },
-        orderBy: { path: "asc" },
-        select: {
-          id: true,
-          path: true,
-          language: true,
-          sizeBytes: true,
-          isGenerated: true,
-          isTest: true
-        }
-      }),
-      db.symbol.findMany({
-        where: { repositoryId: id },
-        orderBy: [{ file: { path: "asc" } }, { startLine: "asc" }, { name: "asc" }],
-        include: {
-          file: {
-            select: {
-              path: true
-            }
-          },
-          outgoingReferences: {
-            select: {
-              kind: true
-            }
-          },
-          incomingReferences: {
-            select: {
-              kind: true
-            }
-          }
-        }
-      })
-    ]);
-
-    const topLanguages = buildDocsLanguageSummary(files);
-    const importantPaths = buildDocsImportantPaths(files).map((file) => ({
-      path: file.path
-    }));
-    const testFileCount = files.filter(
-      (file) => file.isTest || TEST_FILE_PATTERN.test(file.path)
-    ).length;
-    const generatedFileCount = files.filter((file) => file.isGenerated).length;
-    const exportedSymbols = symbols
-      .filter((symbol) => symbol.visibility === "exported")
-      .map(serializeDocsSymbol);
-    const connectedSymbols = symbols
-      .filter((symbol) => getDocsSymbolConnectionCount(symbol) > 0)
-      .sort(
-        (left, right) =>
-          getDocsSymbolConnectionCount(right) -
-            getDocsSymbolConnectionCount(left) ||
-          left.name.localeCompare(right.name)
-      )
-      .slice(0, 8)
-      .map(serializeDocsSymbol);
-    const primaryLanguage =
-      topLanguages.find((language) => language.language !== "Other") ??
-      topLanguages[0];
-    const frameworkSummary = repository.detectedFrameworks.length
-      ? repository.detectedFrameworks.join(", ")
-      : "No framework signal has been confirmed yet.";
-    const publicSymbolNames = exportedSymbols
+    const context = await loadDocsContext(id);
+    const publicSymbolNames = context.exportedSymbols
       .slice(0, 5)
       .map((symbol) => symbol.name);
-    const keyFileNames = importantPaths.slice(0, 4).map((file) => file.path);
-    const overviewText = `${repository.owner}/${repository.name} is indexed as a ${
-      primaryLanguage?.language ?? "code"
-    } repository with ${repository.fileCount} files and ${
-      symbols.length
-    } parser-backed symbols. ${frameworkSummary}`;
+    const keyFileNames = context.importantPaths
+      .slice(0, 4)
+      .map((file) => file.path);
 
     return {
-      repository,
+      repository: context.repository,
       overview: {
-        text: overviewText,
-        primaryLanguage: primaryLanguage?.language ?? null,
-        frameworkSummary
+        text: context.overviewText,
+        primaryLanguage: context.primaryLanguage?.language ?? null,
+        frameworkSummary: context.frameworkSummary
       },
       architecture: {
-        topLanguages,
-        importantPaths,
-        testFileCount,
-        generatedFileCount
+        topLanguages: context.topLanguages,
+        importantPaths: context.importantPaths,
+        testFileCount: context.testFileCount,
+        generatedFileCount: context.generatedFileCount
       },
       symbols: {
-        exported: exportedSymbols.slice(0, 12),
-        mostConnected: connectedSymbols,
+        exported: context.exportedSymbols.slice(0, 12),
+        mostConnected: context.connectedSymbols,
         counts: {
-          total: symbols.length,
-          exported: exportedSymbols.length,
-          connected: symbols.filter(
+          total: context.symbols.length,
+          exported: context.exportedSymbols.length,
+          connected: context.symbols.filter(
             (symbol) => getDocsSymbolConnectionCount(symbol) > 0
           ).length
         }
@@ -756,7 +891,7 @@ export class RepositoriesController {
       docsPreview: [
         {
           title: "Repository Overview",
-          body: overviewText
+          body: context.overviewText
         },
         {
           title: "Key Files",
@@ -772,12 +907,26 @@ export class RepositoriesController {
         },
         {
           title: "Testing Signals",
-          body: testFileCount
-            ? `${testFileCount} test file${testFileCount === 1 ? "" : "s"} were detected. Test coverage signals can guide usage examples and behavior notes.`
+          body: context.testFileCount
+            ? `${context.testFileCount} test file${context.testFileCount === 1 ? "" : "s"} were detected. Test coverage signals can guide usage examples and behavior notes.`
             : "No test files were detected from the indexed paths."
         }
       ],
       queuedSections: DOCS_QUEUED_SECTIONS
+    };
+  }
+
+  @Post(":id/docs/readme-draft")
+  async readmeDraft(@Param("id") id: string) {
+    const context = await loadDocsContext(id);
+    const draft = buildReadmeDraft(context);
+
+    return {
+      repositoryId: id,
+      title: draft.title,
+      markdown: draft.markdown,
+      generatedAt: new Date().toISOString(),
+      source: "deterministic"
     };
   }
 

@@ -240,6 +240,14 @@ type DocsSummaryResponse = {
   }>;
 };
 
+type ReadmeDraftResponse = {
+  repositoryId: string;
+  title: string;
+  markdown: string;
+  generatedAt: string;
+  source: "deterministic";
+};
+
 type SymbolReferencesResponse = {
   repositoryId: string;
   symbol: RepositorySymbol;
@@ -1696,6 +1704,10 @@ function DocsPanel({
   summary,
   isLoading,
   error,
+  readmeDraft,
+  isGeneratingReadmeDraft,
+  readmeDraftError,
+  onGenerateReadmeDraft,
   onInspectSymbol,
   onOpenInFiles,
 }: {
@@ -1703,9 +1715,24 @@ function DocsPanel({
   summary: DocsSummaryResponse | null;
   isLoading: boolean;
   error: string | null;
+  readmeDraft: ReadmeDraftResponse | null;
+  isGeneratingReadmeDraft: boolean;
+  readmeDraftError: string | null;
+  onGenerateReadmeDraft: () => void;
   onInspectSymbol: (symbolId: string) => void;
   onOpenInFiles: (symbol: { filePath: string }) => void;
 }) {
+  const [readmeCopyState, setReadmeCopyState] = useState<"idle" | "copied">(
+    "idle",
+  );
+
+  async function copyReadmeDraft() {
+    if (!readmeDraft) return;
+    await navigator.clipboard.writeText(readmeDraft.markdown);
+    setReadmeCopyState("copied");
+    window.setTimeout(() => setReadmeCopyState("idle"), 1400);
+  }
+
   return (
     <div className="rounded-md border border-line bg-white">
       <div className="border-b border-line px-4 py-3">
@@ -1841,6 +1868,73 @@ function DocsPanel({
                   </div>
                 ))}
               </div>
+            </section>
+
+            <section className="rounded-md border border-line bg-white p-4 shadow-sm">
+              <div className="flex items-start justify-between gap-4">
+                <div className="min-w-0">
+                  <p className="font-semibold text-ink">README draft</p>
+                  <p className="mt-1 text-sm leading-6 text-graphite">
+                    Generate a deterministic Markdown draft from indexed
+                    repository facts, paths, and symbols.
+                  </p>
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  {readmeDraft ? (
+                    <button
+                      type="button"
+                      onClick={copyReadmeDraft}
+                      className="inline-flex h-9 items-center gap-2 rounded-md border border-line bg-white px-3 text-sm font-medium text-graphite hover:border-signal hover:text-ink"
+                    >
+                      <Copy size={15} />
+                      {readmeCopyState === "copied" ? "Copied" : "Copy"}
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    onClick={onGenerateReadmeDraft}
+                    disabled={isGeneratingReadmeDraft}
+                    className="inline-flex h-9 items-center gap-2 rounded-md bg-ink px-3 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {isGeneratingReadmeDraft ? (
+                      <Loader2 size={15} className="animate-spin" />
+                    ) : (
+                      <BookOpen size={15} />
+                    )}
+                    Generate README draft
+                  </button>
+                </div>
+              </div>
+
+              {readmeDraftError ? (
+                <div className="mt-4 rounded-md border border-red-200 bg-red-50 p-3 text-sm leading-6 text-red-700">
+                  {readmeDraftError}
+                </div>
+              ) : null}
+
+              {readmeDraft ? (
+                <div className="mt-4 overflow-hidden rounded-md border border-line bg-cloud">
+                  <div className="flex items-center justify-between gap-3 border-b border-line bg-white px-4 py-3">
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-semibold text-ink">
+                        {readmeDraft.title}
+                      </p>
+                      <p className="mt-1 text-xs text-graphite">
+                        {readmeDraft.source} -{" "}
+                        {new Date(readmeDraft.generatedAt).toLocaleString()}
+                      </p>
+                    </div>
+                    <FileCode2 size={16} className="shrink-0 text-signal" />
+                  </div>
+                  <pre className="max-h-[360px] overflow-auto whitespace-pre-wrap p-4 font-mono text-xs leading-6 text-ink">
+                    {readmeDraft.markdown}
+                  </pre>
+                </div>
+              ) : (
+                <div className="mt-4 rounded-md border border-dashed border-line bg-cloud/70 p-4 text-sm leading-6 text-graphite">
+                  No README draft has been generated for this analysis yet.
+                </div>
+              )}
             </section>
 
             <section className="grid grid-cols-[minmax(0,1fr)_320px] gap-4">
@@ -2105,6 +2199,11 @@ export default function Home() {
   );
   const [isLoadingDocsSummary, setIsLoadingDocsSummary] = useState(false);
   const [docsSummaryError, setDocsSummaryError] = useState<string | null>(null);
+  const [readmeDraft, setReadmeDraft] = useState<ReadmeDraftResponse | null>(
+    null,
+  );
+  const [isGeneratingReadmeDraft, setIsGeneratingReadmeDraft] = useState(false);
+  const [readmeDraftError, setReadmeDraftError] = useState<string | null>(null);
   const [symbolsResponse, setSymbolsResponse] =
     useState<SymbolsResponse | null>(null);
   const [selectedSymbolId, setSelectedSymbolId] = useState<string | null>(null);
@@ -2392,6 +2491,9 @@ export default function Home() {
       setDocsSummary(null);
       setDocsSummaryError(null);
       setIsLoadingDocsSummary(false);
+      setReadmeDraft(null);
+      setReadmeDraftError(null);
+      setIsGeneratingReadmeDraft(false);
       return;
     }
 
@@ -2473,6 +2575,11 @@ export default function Home() {
     setExpanded(new Set());
     setSearchResponse(null);
     setSearchError(null);
+    setDocsSummary(null);
+    setDocsSummaryError(null);
+    setReadmeDraft(null);
+    setReadmeDraftError(null);
+    setIsGeneratingReadmeDraft(false);
     setSelectedFileSource(null);
     setFileSourceError(null);
     setIsLoadingFileSource(false);
@@ -2550,6 +2657,35 @@ export default function Home() {
       );
     } finally {
       setIsSearching(false);
+    }
+  }
+
+  async function generateReadmeDraft() {
+    if (!job?.repositoryId || !repositoryReady) return;
+
+    setIsGeneratingReadmeDraft(true);
+    setReadmeDraftError(null);
+
+    try {
+      const response = await fetch(
+        `${API_URL}/repositories/${job.repositoryId}/docs/readme-draft`,
+        {
+          method: "POST",
+        },
+      );
+
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new Error(body?.message ?? "Unable to generate README draft.");
+      }
+
+      setReadmeDraft((await response.json()) as ReadmeDraftResponse);
+    } catch (err) {
+      setReadmeDraftError(
+        err instanceof Error ? err.message : "Unable to generate README draft.",
+      );
+    } finally {
+      setIsGeneratingReadmeDraft(false);
     }
   }
 
@@ -3374,6 +3510,10 @@ export default function Home() {
               summary={docsSummary}
               isLoading={isLoadingDocsSummary}
               error={docsSummaryError}
+              readmeDraft={readmeDraft}
+              isGeneratingReadmeDraft={isGeneratingReadmeDraft}
+              readmeDraftError={readmeDraftError}
+              onGenerateReadmeDraft={generateReadmeDraft}
               onInspectSymbol={inspectSymbol}
               onOpenInFiles={openSymbolInFiles}
             />
