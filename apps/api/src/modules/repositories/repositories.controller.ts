@@ -1,4 +1,4 @@
-﻿import {
+import {
   BadRequestException,
   Body,
   Controller,
@@ -37,6 +37,40 @@ const DOCS_QUEUED_SECTIONS = [
     description: "Guided narrative for onboarding and repository Q&A."
   }
 ];
+const SOURCE_SIGNAL_PATTERNS = [
+  /^README(\.|$)/i,
+  /^package\.json$/i,
+  /(^|\/)(app|server|main|index)\.[cm]?[jt]sx?$/i,
+  /(^|\/)routes?\//i,
+  /(^|\/)controllers?\//i,
+  /(^|\/)services?\//i,
+  /(^|\/)(models?|schema|schemas|drizzle|prisma|data|database|db)\//i,
+  /(^|\/)middlewares?\//i,
+  /(^|\/)(validators?|validation)\//i,
+  /(^|\/)(config|configs)\//i,
+  /^\.env(\.|$)|(^|\/)\.env\.example$/i
+];
+
+type SignalSnippet = { path: string; content: string };
+type UnderstandingContext = {
+  repository: {
+    owner: string;
+    name: string;
+    detectedFrameworks: string[];
+  };
+  files: Array<{ path: string }>;
+  symbols: Array<{ name: string }>;
+  primaryLanguage?: { language: string } | undefined;
+};
+type RepositoryUnderstanding = {
+  purpose: string;
+  domain: string;
+  coreFeatures: string[];
+  architecture: string;
+  mainModules: Array<{ name: string; purpose: string }>;
+  readingOrder: Array<{ file: string; reason: string }>;
+  summary: string;
+};
 
 function parseGitHubUrl(url: string): { owner: string; name: string; normalizedUrl: string } {
   const trimmed = url.trim();
@@ -346,6 +380,344 @@ function serializeDocsSymbol(symbol: {
   };
 }
 
+function normalizeSignalText(value: string): string {
+  return value
+    .replace(/[`*_>#]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function humanizeIdentifier(value: string): string {
+  return value
+    .replace(/\.[^.]+$/, "")
+    .replace(/[-_]/g, " ")
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase())
+    .trim();
+}
+
+function getArticle(value: string): "a" | "an" {
+  return /^[aeiou]/i.test(value.trim()) ? "an" : "a";
+}
+
+function splitPathParts(path: string): string[] {
+  return path
+    .split("/")
+    .map((part) => part.replace(/\.[^.]+$/, "").toLowerCase())
+    .filter(Boolean);
+}
+
+function getSignalPaths(files: Array<{ path: string }>) {
+  return files
+    .map((file) => file.path)
+    .filter((path) =>
+      SOURCE_SIGNAL_PATTERNS.some((pattern) => pattern.test(path))
+    )
+    .slice(0, 40);
+}
+
+function getSnippetForPath(snippets: SignalSnippet[], path: string): string {
+  return snippets
+    .filter((snippet) => snippet.path.toLowerCase() === path.toLowerCase())
+    .map((snippet) => snippet.content)
+    .join("\n")
+    .slice(0, 5000);
+}
+
+function getReadmePurpose(snippets: SignalSnippet[]): string | null {
+  const readme = snippets.find((snippet) => /^README(\.|$)/i.test(snippet.path));
+  if (!readme) return null;
+
+  const lines = readme.content
+    .split("\n")
+    .map(normalizeSignalText)
+    .filter((line) => line && !/^install|usage|setup|scripts$/i.test(line));
+  const heading = lines.find((line) => line.length > 3 && line.length < 90);
+  const paragraph = lines.find((line) => line.length >= 40 && line.length < 260);
+  const text = paragraph ?? heading;
+
+  return text ? text.replace(/^#+\s*/, "") : null;
+}
+
+function parsePackageSignals(packageContent: string) {
+  if (!packageContent) {
+    return {
+      name: null as string | null,
+      description: null as string | null,
+      dependencies: [] as string[]
+    };
+  }
+
+  try {
+    const parsed = JSON.parse(packageContent) as {
+      name?: string;
+      description?: string;
+      dependencies?: Record<string, string>;
+      devDependencies?: Record<string, string>;
+    };
+    return {
+      name: parsed.name ?? null,
+      description: parsed.description ?? null,
+      dependencies: [
+        ...Object.keys(parsed.dependencies ?? {}),
+        ...Object.keys(parsed.devDependencies ?? {})
+      ]
+    };
+  } catch {
+    return {
+      name: null,
+      description: null,
+      dependencies: []
+    };
+  }
+}
+
+function hasSignal(values: string[], pattern: RegExp): boolean {
+  return values.some((value) => pattern.test(value));
+}
+
+function inferFrameworkLabel(context: UnderstandingContext, dependencies: string[]) {
+  const signals = [...context.repository.detectedFrameworks, ...dependencies];
+
+  if (hasSignal(signals, /express/i)) return "Express.js backend";
+  if (hasSignal(signals, /nest/i)) return "NestJS backend";
+  if (hasSignal(signals, /fastify/i)) return "Fastify backend";
+  if (hasSignal(signals, /hono/i)) return "Hono backend";
+  if (hasSignal(signals, /next/i)) return "Next.js application";
+  if (hasSignal(signals, /react/i)) return "React frontend";
+  if (hasSignal(signals, /vue/i)) return "Vue frontend";
+  if (hasSignal(signals, /django/i)) return "Django backend";
+  if (hasSignal(signals, /fastapi/i)) return "FastAPI backend";
+  return context.primaryLanguage?.language
+    ? `${context.primaryLanguage.language} project`
+    : "software project";
+}
+
+function inferDatabaseLabel(context: UnderstandingContext, dependencies: string[]) {
+  const source = [
+    ...dependencies,
+    ...context.files.map((file) => file.path),
+    ...context.repository.detectedFrameworks
+  ].join(" ");
+
+  if (/drizzle/i.test(source)) return "Drizzle";
+  if (/prisma/i.test(source)) return "Prisma";
+  if (/mongoose|mongo/i.test(source)) return "MongoDB";
+  if (/postgres|pg\b/i.test(source)) return "Postgres";
+  if (/mysql|mariadb/i.test(source)) return "MySQL";
+  if (/sqlite/i.test(source)) return "SQLite";
+  return null;
+}
+
+function inferDomain(context: UnderstandingContext, snippets: SignalSnippet[]) {
+  const text = [
+    context.repository.name,
+    getReadmePurpose(snippets) ?? "",
+    ...context.files.map((file) => file.path),
+    ...context.symbols.map((symbol) => symbol.name)
+  ]
+    .join(" ")
+    .toLowerCase();
+
+  if (/short.?url|url.?short|link|redirect|slug/.test(text)) {
+    return "URL shortening and link management";
+  }
+  if (/auth|login|session|user|account/.test(text)) {
+    return "User access and account workflows";
+  }
+  if (/invoice|billing|payment|checkout|stripe/.test(text)) {
+    return "Payments and billing";
+  }
+  if (/task|ticket|issue|project|workflow/.test(text)) {
+    return "Project and workflow management";
+  }
+  if (/chat|message|conversation/.test(text)) {
+    return "Messaging and collaboration";
+  }
+  if (/api|route|controller|service/.test(text)) {
+    return "Backend API services";
+  }
+  return "Application logic and developer-facing workflows";
+}
+
+function inferCoreFeatures(context: UnderstandingContext, dependencies: string[]) {
+  const source = [
+    ...dependencies,
+    ...context.files.map((file) => file.path),
+    ...context.symbols.map((symbol) => symbol.name)
+  ].join(" ");
+  const features = new Set<string>();
+
+  if (/auth|login|session|token|jwt|passport|oauth/i.test(source)) {
+    features.add("User authentication");
+  }
+  if (/short|slug|redirect|url|link/i.test(source)) {
+    features.add("Short URL creation and redirect handling");
+  }
+  if (/route|router|controller|handler/i.test(source)) {
+    features.add("HTTP API routing and request handling");
+  }
+  if (/service|usecase|business/i.test(source)) {
+    features.add("Service-layer business logic");
+  }
+  if (/model|schema|drizzle|prisma|database|repository|db/i.test(source)) {
+    features.add("Database persistence");
+  }
+  if (/validator|validation|zod|joi|yup/i.test(source)) {
+    features.add("Request validation");
+  }
+  if (/middleware|guard|cors|helmet|rate.?limit/i.test(source)) {
+    features.add("Middleware-based request protection");
+  }
+  if (/test|spec|jest|vitest|mocha/i.test(source)) {
+    features.add("Automated tests or behavior checks");
+  }
+
+  return [...features].slice(0, 8);
+}
+
+function inferMainModules(context: UnderstandingContext) {
+  const modules = new Map<string, string>();
+  const paths = context.files.map((file) => file.path.toLowerCase());
+
+  function add(name: string, purpose: string) {
+    if (!modules.has(name)) modules.set(name, purpose);
+  }
+
+  if (paths.some((path) => /routes?/.test(path))) {
+    add("routes", "API route definitions and URL-to-handler mapping.");
+  }
+  if (paths.some((path) => /controllers?/.test(path))) {
+    add("controllers", "Request handling and response orchestration.");
+  }
+  if (paths.some((path) => /services?/.test(path))) {
+    add("services", "Business logic and application workflows.");
+  }
+  if (paths.some((path) => /middlewares?/.test(path))) {
+    add("middlewares", "Authentication, validation, and request processing.");
+  }
+  if (paths.some((path) => /models?|schema|drizzle|prisma|data|database|db/.test(path))) {
+    add("database", "Persistence, schema, and data access layer.");
+  }
+  if (paths.some((path) => /validators?|validation/.test(path))) {
+    add("validators", "Input validation and request shape checks.");
+  }
+  if (paths.some((path) => /config|env/.test(path))) {
+    add("configuration", "Runtime configuration and environment setup.");
+  }
+  if (paths.some((path) => /utils?|helpers?|lib/.test(path))) {
+    add("utilities", "Shared helpers used across modules.");
+  }
+
+  if (!modules.size) {
+    const topFolders = [...new Set(context.files.flatMap((file) => splitPathParts(file.path).slice(0, 2)))]
+      .slice(0, 5);
+    topFolders.forEach((folder) =>
+      add(folder, `${humanizeIdentifier(folder)} implementation area.`)
+    );
+  }
+
+  return [...modules.entries()].map(([name, purpose]) => ({ name, purpose }));
+}
+
+function inferArchitecture(context: UnderstandingContext, modules: Array<{ name: string }>) {
+  const moduleNames = modules.map((module) => module.name);
+  const hasLayeredBackend =
+    moduleNames.includes("routes") &&
+    (moduleNames.includes("controllers") || moduleNames.includes("services"));
+  const hasDatabase = moduleNames.includes("database");
+
+  if (hasLayeredBackend) {
+    return `The project appears to follow a layered backend structure: Routes -> ${
+      moduleNames.includes("controllers") ? "Controllers -> " : ""
+    }Services${hasDatabase ? " -> Database/Models" : ""}.`;
+  }
+
+  if (context.repository.detectedFrameworks.some((framework) => /next|react|vue/i.test(framework))) {
+    return "The project appears to follow a frontend application structure with pages/components backed by shared utilities and configuration.";
+  }
+
+  return "The project appears to be organized around entry files, implementation modules, configuration, and supporting utilities.";
+}
+
+function buildReadingOrder(context: UnderstandingContext) {
+  const candidates = context.files.map((file) => file.path);
+  const orderedPatterns: Array<[RegExp, string]> = [
+    [/^README(\.|$)/i, "Understand the product purpose and setup notes."],
+    [/^package\.json$/i, "Review scripts, dependencies, and runtime shape."],
+    [/(^|\/)(app|server|main|index)\.[cm]?[jt]sx?$/i, "Find the application entry point."],
+    [/(^|\/)routes?\//i, "Trace API surfaces and request flow."],
+    [/(^|\/)controllers?\//i, "See how requests are handled."],
+    [/(^|\/)services?\//i, "Inspect business logic and orchestration."],
+    [/(^|\/)(models?|schema|drizzle|prisma|data|database|db)\//i, "Understand persistence and data shape."]
+  ];
+  const used = new Set<string>();
+
+  return orderedPatterns
+    .map(([pattern, reason]) => {
+      const file = candidates.find((path) => pattern.test(path) && !used.has(path));
+      if (!file) return null;
+      used.add(file);
+      return { file, reason };
+    })
+    .filter((item): item is { file: string; reason: string } => Boolean(item))
+    .slice(0, 8);
+}
+
+function buildRepositoryUnderstanding(
+  context: UnderstandingContext,
+  snippets: SignalSnippet[]
+): RepositoryUnderstanding {
+  const packageSignals = parsePackageSignals(
+    getSnippetForPath(snippets, "package.json")
+  );
+  const framework = inferFrameworkLabel(context, packageSignals.dependencies);
+  const database = inferDatabaseLabel(context, packageSignals.dependencies);
+  const domain = inferDomain(context, snippets);
+  const features = inferCoreFeatures(context, packageSignals.dependencies);
+  const modules = inferMainModules(context);
+  const architecture = inferArchitecture(context, modules);
+  const readingOrder = buildReadingOrder(context);
+  const projectName =
+    packageSignals.name?.replace(/^@[^/]+\//, "") ?? context.repository.name;
+  const displayName = humanizeIdentifier(projectName);
+  const readmePurpose = getReadmePurpose(snippets);
+  const packagePurpose = packageSignals.description
+    ? normalizeSignalText(packageSignals.description)
+    : null;
+  const fallbackPurpose = `${displayName} is ${getArticle(
+    framework
+  )} ${framework} for ${domain.toLowerCase()}.`;
+  const purpose =
+    readmePurpose ??
+    packagePurpose ??
+    fallbackPurpose;
+  const featureSentence = features.length
+    ? ` It includes ${features
+        .map((feature) => feature.toLowerCase())
+        .join(", ")}.`
+    : "";
+  const databaseSentence = database
+    ? ` It stores project data through the ${database} layer.`
+    : "";
+  const summary =
+    purpose === fallbackPurpose
+      ? `${purpose}${featureSentence}${databaseSentence} ${architecture}`
+      : `${displayName} appears to be ${getArticle(
+          framework
+        )} ${framework} for ${domain.toLowerCase()}. ${purpose}${featureSentence}${databaseSentence} ${architecture}`;
+
+  return {
+    purpose,
+    domain,
+    coreFeatures: features,
+    architecture,
+    mainModules: modules,
+    readingOrder,
+    summary
+  };
+}
+
 async function loadDocsContext(id: string) {
   const repository = await db.repository.findUnique({
     where: { id },
@@ -435,6 +807,31 @@ async function loadDocsContext(id: string) {
   } repository with ${repository.fileCount} files and ${
     symbols.length
   } parser-backed symbols. ${frameworkSummary}`;
+  const signalPaths = getSignalPaths(files);
+  const signalChunks = signalPaths.length
+    ? await db.knowledgeChunk.findMany({
+        where: {
+          repositoryId: id,
+          chunkKind: "FILE",
+          path: { in: signalPaths }
+        },
+        orderBy: [{ path: "asc" }, { startLine: "asc" }],
+        select: {
+          path: true,
+          content: true
+        },
+        take: 80
+      })
+    : [];
+  const understanding = buildRepositoryUnderstanding(
+    {
+      repository,
+      files,
+      symbols,
+      primaryLanguage
+    },
+    signalChunks
+  );
 
   return {
     repository,
@@ -448,7 +845,9 @@ async function loadDocsContext(id: string) {
     connectedSymbols,
     primaryLanguage,
     frameworkSummary,
-    overviewText
+    overviewText,
+    signalSnippets: signalChunks,
+    understanding
   };
 }
 
@@ -1037,10 +1436,11 @@ export class RepositoriesController {
     return {
       repository: context.repository,
       overview: {
-        text: context.overviewText,
+        text: context.understanding.summary,
         primaryLanguage: context.primaryLanguage?.language ?? null,
         frameworkSummary: context.frameworkSummary
       },
+      understanding: context.understanding,
       architecture: {
         topLanguages: context.topLanguages,
         importantPaths: context.importantPaths,
@@ -1061,7 +1461,7 @@ export class RepositoriesController {
       docsPreview: [
         {
           title: "Repository Overview",
-          body: context.overviewText
+          body: context.understanding.summary
         },
         {
           title: "Key Files",
@@ -1084,6 +1484,13 @@ export class RepositoriesController {
       ],
       queuedSections: DOCS_QUEUED_SECTIONS
     };
+  }
+
+  @Get(":id/understanding")
+  async understanding(@Param("id") id: string) {
+    const context = await loadDocsContext(id);
+
+    return context.understanding;
   }
 
   @Post(":id/docs/readme-draft")

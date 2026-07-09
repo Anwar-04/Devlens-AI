@@ -3,7 +3,6 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   AlertCircle,
-  BookOpen,
   Braces,
   CheckCircle2,
   ChevronDown,
@@ -11,15 +10,16 @@ import {
   Clock3,
   Copy,
   ExternalLink,
-  File,
   FileCode2,
   Folder,
   FolderOpen,
   GitPullRequest,
   Loader2,
+  Maximize2,
   Network,
   Search,
   Sparkles,
+  X,
   Workflow,
   XCircle,
 } from "lucide-react";
@@ -134,6 +134,19 @@ type SearchResponse = {
   results: SearchResult[];
 };
 
+type DevlensCitation = {
+  path: string;
+  label: string;
+  reason: string;
+  startLine?: number;
+  endLine?: number;
+};
+
+type DevlensResponse = {
+  answer: string;
+  citations: DevlensCitation[];
+};
+
 type SymbolRelation = {
   referenceId: string;
   referenceKind: "REFERENCE" | "CALL";
@@ -188,6 +201,22 @@ type DocsSummarySymbol = {
   incomingReferences: number;
 };
 
+type RepositoryUnderstanding = {
+  purpose: string;
+  domain: string;
+  coreFeatures: string[];
+  architecture: string;
+  mainModules: Array<{
+    name: string;
+    purpose: string;
+  }>;
+  readingOrder: Array<{
+    file: string;
+    reason: string;
+  }>;
+  summary: string;
+};
+
 type DocsSummaryResponse = {
   repository: {
     id: string;
@@ -206,6 +235,7 @@ type DocsSummaryResponse = {
     primaryLanguage: string | null;
     frameworkSummary: string;
   };
+  understanding: RepositoryUnderstanding;
   architecture: {
     topLanguages: Array<{
       language: string;
@@ -589,22 +619,57 @@ function buildSeniorRepoExplanation(summary: DocsSummaryResponse | null): string
 }
 
 function getFileRole(path: string): string {
+  return getFileRoleLabel(path);
+}
+
+function getFileRoleLabel(path: string): string {
   const normalized = path.toLowerCase();
-  if (normalized.endsWith("readme.md")) return "Project orientation and usage guide";
-  if (normalized.endsWith("package.json")) return "Package metadata, scripts, and dependency map";
+  if (normalized.endsWith("readme.md")) return "Documentation";
+  if (normalized.endsWith("package.json")) return "Package Manifest";
+  if (normalized.includes(".env")) return "Environment Config";
   if (normalized.includes(".test.") || normalized.includes(".spec.") || normalized.includes("/test")) {
-    return "Behavior validation and edge-case documentation";
+    return "Test";
   }
-  if (normalized.endsWith("index.ts") || normalized.endsWith("index.js")) {
-    return "Primary source entry point";
+  if (/(^|\/)(app|server|main|index)\.[cm]?[jt]sx?$/.test(normalized)) {
+    return "Entry Point";
   }
-  if (normalized.includes("config")) return "Configuration and runtime setup";
-  if (normalized.includes("route") || normalized.includes("controller")) return "Request flow and routing";
-  return "Implementation file";
+  if (normalized.includes("controller")) return "Controller";
+  if (normalized.includes("service")) return "Service";
+  if (normalized.includes("route") || normalized.includes("router")) return "Route";
+  if (normalized.includes("middleware") || normalized.includes("guard")) return "Middleware";
+  if (normalized.includes("model") || normalized.includes("schema")) return "Model";
+  if (normalized.includes("validator") || normalized.includes("validation")) return "Validator";
+  if (normalized.includes("drizzle") || normalized.includes("prisma") || normalized.includes("database") || normalized.includes("/db")) return "Database";
+  if (normalized.includes("config")) return "Config";
+  if (normalized.includes("view") || normalized.includes("page") || normalized.includes("component")) return "View";
+  if (normalized.includes("util") || normalized.includes("helper") || normalized.includes("lib")) return "Utility";
+  return "Unknown";
+}
+
+function getFileRolePurpose(role: string): string {
+  const purposes: Record<string, string> = {
+    Controller: "handles incoming requests and coordinates responses.",
+    Service: "contains business logic and orchestration for a feature.",
+    Route: "maps URLs or API endpoints to controllers and middleware.",
+    Middleware: "runs cross-cutting request logic such as auth, validation, or protection.",
+    Model: "defines data shape and persistence concepts.",
+    Validator: "checks request input before it reaches business logic.",
+    Database: "configures persistence, schemas, or data access.",
+    Config: "controls runtime behavior and integration settings.",
+    Test: "documents expected behavior through executable checks.",
+    Documentation: "explains project purpose, setup, and usage.",
+    "Package Manifest": "defines scripts, dependencies, and package metadata.",
+    "Entry Point": "boots the application and wires top-level modules together.",
+    View: "defines user-facing screens or UI components.",
+    Utility: "provides shared helpers used by other modules.",
+    "Environment Config": "documents required runtime environment values.",
+  };
+
+  return purposes[role] ?? "contains implementation details for this part of the repository.";
 }
 
 function buildFileMatterSummary(path: string, symbols: RepositorySymbol[]) {
-  const role = getFileRole(path);
+  const role = getFileRoleLabel(path);
   const importantSymbols = symbols.slice(0, 3).map((symbol) => symbol.name);
   const normalized = path.toLowerCase();
   const suggestedNext = normalized.endsWith("readme.md")
@@ -617,12 +682,433 @@ function buildFileMatterSummary(path: string, symbols: RepositorySymbol[]) {
 
   return {
     role,
-    purpose: `${path} is useful because it helps you ${getPathReason(path)}.`,
+    purpose: `${path} ${getFileRolePurpose(role)}`,
     whyRead: importantSymbols.length
       ? `It contains ${importantSymbols.join(", ")}, which makes it a useful anchor for understanding behavior in this part of the repository.`
       : "It is a good place to inspect source flow, naming, and local implementation patterns.",
     suggestedNext,
   };
+}
+
+function splitIdentifierLabel(value: string): string {
+  return value
+    .replace(/\.[^.]+$/, "")
+    .replace(/[-_]/g, " ")
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .toLowerCase();
+}
+
+function buildFileSummaryText(path: string, role: string, symbols: RepositorySymbol[]) {
+  const name = path.split("/").pop() ?? path;
+  const symbolNames = symbols.slice(0, 3).map((symbol) => symbol.name);
+  const symbolText = symbolNames.length
+    ? ` It exposes or contains ${symbolNames.join(", ")}.`
+    : "";
+  const nextHint =
+    role === "Controller"
+      ? "Read the matching route first if you want to see how requests enter this file, then read the service it calls."
+      : role === "Service"
+        ? "Read the controller that calls it next, then inspect the database or model layer it depends on."
+        : role === "Route"
+          ? "Read this before the controller so the request path and middleware order are clear."
+          : role === "Database" || role === "Model"
+            ? "Read this to understand what data exists and how other modules persist or query it."
+            : "Use the related files below to continue following the implementation.";
+
+  return `${name} ${getFileRolePurpose(role)} A developer should read this file to understand ${splitIdentifierLabel(
+    name,
+  )} and how this part of the repository connects to nearby ${
+    role === "Controller" ? "routes and services" : role === "Service" ? "controllers and persistence code" : "implementation modules"
+  }.${symbolText} ${nextHint}`;
+}
+
+function buildFileResponsibilities(path: string, role: string, symbols: RepositorySymbol[]) {
+  const normalized = path.toLowerCase();
+  const responsibilities = new Set<string>();
+
+  if (role === "Controller") {
+    responsibilities.add("Handles incoming HTTP requests");
+    responsibilities.add("Reads request parameters and payload values");
+    responsibilities.add("Delegates business work to services");
+    responsibilities.add("Returns responses to callers");
+  }
+  if (role === "Service") {
+    responsibilities.add("Coordinates feature-level business logic");
+    responsibilities.add("Calls database, model, or helper functions");
+    responsibilities.add("Returns reusable results to controllers");
+  }
+  if (role === "Route") {
+    responsibilities.add("Defines route paths and HTTP handlers");
+    responsibilities.add("Connects middleware to controllers");
+  }
+  if (role === "Middleware") {
+    responsibilities.add("Processes requests before handlers run");
+    responsibilities.add("Protects routes or enriches request context");
+  }
+  if (role === "Validator") responsibilities.add("Validates request input shape");
+  if (role === "Database" || role === "Model") responsibilities.add("Defines persistence and data shape");
+  if (/auth|login|session|token|oauth/.test(normalized)) responsibilities.add("Supports authentication or session flow");
+  if (/short|url|link|redirect|slug/.test(normalized)) responsibilities.add("Supports link creation or redirect behavior");
+
+  symbols.slice(0, 3).forEach((symbol) =>
+    responsibilities.add(`${getSymbolKindMeta(symbol.kind).plural} include ${symbol.name}`),
+  );
+
+  return [...responsibilities].slice(0, 6);
+}
+
+function extractImportsFromSnippet(snippet: string) {
+  const imports = new Set<string>();
+  const importPattern = /import\s+[^'"]*from\s+['"]([^'"]+)['"]/g;
+  const bareImportPattern = /import\s+['"]([^'"]+)['"]/g;
+  const requirePattern = /require\(\s*['"]([^'"]+)['"]\s*\)/g;
+  for (const pattern of [importPattern, bareImportPattern, requirePattern]) {
+    for (const match of snippet.matchAll(pattern)) {
+      if (match[1]) imports.add(match[1]);
+    }
+  }
+  return [...imports].slice(0, 8);
+}
+
+function extractExportsFromSnippet(snippet: string, symbols: RepositorySymbol[]) {
+  const exports = new Set<string>();
+  symbols
+    .filter((symbol) => symbol.visibility === "exported")
+    .forEach((symbol) => exports.add(symbol.name));
+  for (const match of snippet.matchAll(/export\s+(?:const|let|var|function|class)\s+([A-Za-z0-9_$]+)/g)) {
+    if (match[1]) exports.add(match[1]);
+  }
+  return [...exports].slice(0, 8);
+}
+
+function buildCallNames(symbols: RepositorySymbol[]) {
+  const calls = new Set<string>();
+  symbols.forEach((symbol) => {
+    symbol.outgoingCalls.forEach((call) => calls.add(call.symbol.name));
+    symbol.outgoingReferences.forEach((reference) => calls.add(reference.symbol.name));
+  });
+  return [...calls].slice(0, 8);
+}
+
+function buildRelatedFileCandidates(path: string, symbols: RepositorySymbol[]) {
+  const files = new Set<string>();
+  const fileName = path.split("/").pop() ?? path;
+  const stem = fileName
+    .replace(/\.(controller|service|routes?|router|validator|model|schema|middleware)\b/i, "")
+    .replace(/\.[^.]+$/, "");
+  const extension = fileName.endsWith(".ts") ? "ts" : fileName.endsWith(".tsx") ? "tsx" : "js";
+
+  symbols.forEach((symbol) => {
+    symbol.outgoingCalls.forEach((call) => files.add(call.symbol.filePath));
+    symbol.outgoingReferences.forEach((reference) => files.add(reference.symbol.filePath));
+    symbol.incomingReferences.forEach((reference) => files.add(reference.symbol.filePath));
+  });
+
+  [
+    `routes/${stem}.routes.${extension}`,
+    `controllers/${stem}.controller.${extension}`,
+    `services/${stem}.services.${extension}`,
+    `services/${stem}.service.${extension}`,
+    `validators/${stem}.validator.${extension}`,
+    `models/${stem}.model.${extension}`,
+    `schema/${stem}.schema.${extension}`,
+    `data/${stem}.json`,
+  ].forEach((candidate) => {
+    if (candidate !== path) files.add(candidate);
+  });
+
+  files.delete(path);
+  return [...files].slice(0, 6);
+}
+
+function buildFileFlow(path: string, role: string) {
+  const fileName = path.split("/").pop() ?? path;
+  if (["Controller", "Route", "Service"].includes(role)) {
+    if (role === "Route") return [fileName, "middleware", "controller", "service", "database"];
+    if (role === "Controller") return ["route", fileName, "service", "database/model"];
+    return ["controller", fileName, "database/model", "response"];
+  }
+  if (role === "Middleware") return ["request", fileName, "route/controller"];
+  if (role === "Validator") return ["request payload", fileName, "controller"];
+  return ["developer opens file", fileName, "nearby related modules"];
+}
+
+function dedupeCitations(citations: DevlensCitation[]): DevlensCitation[] {
+  const seen = new Set<string>();
+  return citations.filter((citation) => {
+    const key = `${citation.path}:${citation.startLine ?? "file"}:${citation.endLine ?? "file"}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function buildPathCitation(path: string, reason?: string): DevlensCitation {
+  return {
+    path,
+    label: path,
+    reason: reason ?? getPathReason(path),
+  };
+}
+
+function buildSearchCitation(result: SearchResult): DevlensCitation {
+  return {
+    path: result.path,
+    label: result.symbol
+      ? `${result.symbol.name} in ${result.path}`
+      : result.path,
+    reason: getSearchResultPurpose(result),
+    startLine: result.startLine,
+    endLine: result.endLine,
+  };
+}
+
+function buildSymbolCitation(
+  symbol: RepositorySymbol | DocsSummarySymbol,
+): DevlensCitation {
+  return {
+    path: symbol.filePath,
+    label: `${symbol.name} in ${symbol.filePath}`,
+    reason: getSymbolPurpose(symbol),
+    startLine: symbol.startLine,
+    endLine: symbol.endLine,
+  };
+}
+
+type TechnicalOverviewItem = {
+  icon: typeof Workflow;
+  label: string;
+  value: string;
+  description: string;
+};
+
+type CoreComponent = {
+  name: string;
+  purpose: string;
+  fileCount: number;
+  importance: "High" | "Medium" | "Low";
+  representativePath?: string;
+};
+
+function getFrameworkByPattern(
+  frameworks: string[],
+  pattern: RegExp,
+  fallback: string,
+): string {
+  return frameworks.find((framework) => pattern.test(framework)) ?? fallback;
+}
+
+function detectDatabase(summary: DocsSummaryResponse): string {
+  const frameworks = summary.repository.detectedFrameworks;
+  const paths = summary.architecture.importantPaths.map((item) => item.path);
+  const source = [...frameworks, ...paths].join(" ").toLowerCase();
+
+  if (/postgres|pg|prisma/.test(source)) return "Postgres / Prisma";
+  if (/mysql|mariadb|drizzle/.test(source)) return "MySQL / Drizzle";
+  if (/sqlite/.test(source)) return "SQLite";
+  if (/mongo|mongoose/.test(source)) return "MongoDB";
+  if (/redis/.test(source)) return "Redis";
+  return "Not detected";
+}
+
+function detectAuthentication(summary: DocsSummaryResponse): string {
+  const paths = summary.architecture.importantPaths.map((item) => item.path);
+  const symbols = [
+    ...summary.symbols.exported,
+    ...summary.symbols.mostConnected,
+  ].map((symbol) => `${symbol.name} ${symbol.filePath}`);
+  const source = [...paths, ...symbols].join(" ").toLowerCase();
+
+  if (/oauth|openid|passport/.test(source)) return "OAuth signal";
+  if (/jwt|token|session|auth|login/.test(source)) return "Auth signal";
+  return "Not detected";
+}
+
+function getEntryPoint(summary: DocsSummaryResponse): string {
+  return (
+    buildStartHereItems(summary).find((item) => isLikelyEntryPoint(item.path))
+      ?.path ??
+    buildStartHereItems(summary)[0]?.path ??
+    "Pending"
+  );
+}
+
+function buildTechnicalOverviewItems(
+  summary: DocsSummaryResponse,
+): TechnicalOverviewItem[] {
+  const frameworks = summary.repository.detectedFrameworks;
+
+  return [
+    {
+      icon: Workflow,
+      label: "Architecture",
+      value: inferProjectType(summary),
+      description: describeRepositoryArchitecture(summary),
+    },
+    {
+      icon: Braces,
+      label: "Backend Framework",
+      value: getFrameworkByPattern(
+        frameworks,
+        /nest|express|fastify|hono|koa|django|fastapi|rails|spring/i,
+        frameworks[0] ?? "Not detected",
+      ),
+      description: "Primary server or application framework signal.",
+    },
+    {
+      icon: Network,
+      label: "Database",
+      value: detectDatabase(summary),
+      description: "Detected persistence or data-layer technology.",
+    },
+    {
+      icon: CheckCircle2,
+      label: "Authentication",
+      value: detectAuthentication(summary),
+      description: "Auth-related files, symbols, or dependency signals.",
+    },
+    {
+      icon: FileCode2,
+      label: "Testing",
+      value: summary.architecture.testFileCount ? "Present" : "Light",
+      description: summary.architecture.testFileCount
+        ? `${summary.architecture.testFileCount} test file${
+            summary.architecture.testFileCount === 1 ? "" : "s"
+          } detected.`
+        : "Few test signals detected in indexed paths.",
+    },
+    {
+      icon: Braces,
+      label: "Complexity",
+      value: inferComplexity(summary),
+      description: "Based on file count and parser-backed symbols.",
+    },
+    {
+      icon: GitPullRequest,
+      label: "Entry Point",
+      value: getEntryPoint(summary),
+      description: "Best first implementation or documentation anchor.",
+    },
+    {
+      icon: Clock3,
+      label: "Estimated Onboarding",
+      value: estimateOnboarding(summary),
+      description: "Approximate time for a developer to get oriented.",
+    },
+  ];
+}
+
+function getComponentDefinition(path: string): Omit<CoreComponent, "fileCount" | "representativePath"> | null {
+  const normalized = path.toLowerCase();
+
+  if (/auth|login|session|token|oauth/.test(normalized)) {
+    return {
+      name: "Authentication",
+      purpose: "Handles identity, sessions, tokens, or access control.",
+      importance: "High",
+    };
+  }
+  if (/controller|handler/.test(normalized)) {
+    return {
+      name: "Controllers",
+      purpose: "Receives requests and coordinates application responses.",
+      importance: "High",
+    };
+  }
+  if (/service|usecase|use-case/.test(normalized)) {
+    return {
+      name: "Services",
+      purpose: "Contains orchestration and core business behavior.",
+      importance: "High",
+    };
+  }
+  if (/route|router|api\//.test(normalized)) {
+    return {
+      name: "Routes",
+      purpose: "Maps external requests to implementation paths.",
+      importance: "High",
+    };
+  }
+  if (/database|db|prisma|schema|model|repository|migration/.test(normalized)) {
+    return {
+      name: "Database",
+      purpose: "Defines persistence, schema, and data access behavior.",
+      importance: "High",
+    };
+  }
+  if (/middleware|guard|interceptor/.test(normalized)) {
+    return {
+      name: "Middleware",
+      purpose: "Runs cross-cutting request or application logic.",
+      importance: "Medium",
+    };
+  }
+  if (/config|env|settings/.test(normalized)) {
+    return {
+      name: "Configuration",
+      purpose: "Controls runtime, build, and environment behavior.",
+      importance: "Medium",
+    };
+  }
+  if (/component|page|screen|view|app\//.test(normalized)) {
+    return {
+      name: "UI",
+      purpose: "Defines screens, components, and user-facing flows.",
+      importance: "Medium",
+    };
+  }
+  if (/util|helper|lib|shared|common/.test(normalized)) {
+    return {
+      name: "Utilities",
+      purpose: "Provides reusable helpers and shared implementation support.",
+      importance: "Low",
+    };
+  }
+
+  return null;
+}
+
+function buildCoreComponents(summary: DocsSummaryResponse): CoreComponent[] {
+  const componentMap = new Map<string, CoreComponent & { paths: Set<string> }>();
+  const candidatePaths = [
+    ...summary.architecture.importantPaths.map((item) => item.path),
+    ...summary.symbols.mostConnected.map((symbol) => symbol.filePath),
+    ...summary.symbols.exported.map((symbol) => symbol.filePath),
+  ];
+
+  candidatePaths.forEach((path) => {
+    const definition = getComponentDefinition(path);
+    if (!definition) return;
+
+    const existing = componentMap.get(definition.name);
+    if (existing) {
+      existing.paths.add(path);
+      existing.representativePath ??= path;
+      return;
+    }
+
+    componentMap.set(definition.name, {
+      ...definition,
+      fileCount: 1,
+      representativePath: path,
+      paths: new Set([path]),
+    });
+  });
+
+  return [...componentMap.values()]
+    .map(({ paths, ...component }) => ({
+      ...component,
+      fileCount: paths.size,
+    }))
+    .sort((left, right) => {
+      const importanceOrder = { High: 0, Medium: 1, Low: 2 };
+      return (
+        importanceOrder[left.importance] - importanceOrder[right.importance] ||
+        right.fileCount - left.fileCount ||
+        left.name.localeCompare(right.name)
+      );
+    })
+    .slice(0, 8);
 }
 
 function getSearchResultType(result: SearchResult): string {
@@ -687,7 +1173,9 @@ function getSymbolPurpose(symbol: RepositorySymbol | DocsSummarySymbol): string 
   if (/create|add|insert/.test(name)) return `Creates or registers data in this part of the codebase.`;
   if (/auth|login|token|session/.test(name)) return `Participates in authentication or session behavior.`;
   if (/route|handler|controller/.test(name)) return `Helps route or handle a request path.`;
-  return `A ${kind} worth inspecting because it is exposed, referenced, or close to important files.`;
+  return `${symbol.name} is a ${kind} that supports this file's ${getFileRolePurpose(
+    getFileRoleLabel(symbol.filePath),
+  ).replace(/\.$/, "")}.`;
 }
 
 function describeSymbolImportance(symbol: DocsSummarySymbol): string {
@@ -1167,6 +1655,11 @@ function FileSourcePreview({
   source,
   isLoading,
   error,
+  summary,
+  onExplainFile,
+  onFindReferences,
+  onOpenPath,
+  onOpenSymbol,
 }: {
   repositoryReady: boolean;
   selectedNode: ExplorerNode | null;
@@ -1175,20 +1668,48 @@ function FileSourcePreview({
   source: FileSourceResponse | null;
   isLoading: boolean;
   error: string | null;
+  summary: DocsSummaryResponse | null;
+  onExplainFile: () => void;
+  onFindReferences: () => void;
+  onOpenPath: (path: string) => void;
+  onOpenSymbol: (symbolId: string) => void;
 }) {
   const [copiedAction, setCopiedAction] = useState<"path" | "snippet" | null>(
     null,
   );
+  const [fileSearchQuery, setFileSearchQuery] = useState("");
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [areSignalsOpen, setAreSignalsOpen] = useState(false);
   const sourceSnippet = getFileSourceSnippet(source);
   const hasSourceLines = Boolean(sourceSnippet);
   const sourceLineCount = source?.file.previewLines.length ?? 0;
-  const sourcePreviewHeight = sourceLineCount
-    ? Math.min(360, Math.max(180, sourceLineCount * 24 + 28))
-    : 220;
+  const sourcePreviewHeight = "min(70vh, 760px)";
   const fileMatter =
     selectedNode?.kind === "file"
       ? buildFileMatterSummary(selectedNode.path, relatedSymbols)
       : null;
+  const role = selectedNode?.kind === "file" ? getFileRoleLabel(selectedNode.path) : "Unknown";
+  const imports = extractImportsFromSnippet(sourceSnippet);
+  const exports = extractExportsFromSnippet(sourceSnippet, relatedSymbols);
+  const calls = buildCallNames(relatedSymbols);
+  const relatedFiles = selectedNode?.kind === "file"
+    ? buildRelatedFileCandidates(selectedNode.path, relatedSymbols)
+    : [];
+  const responsibilities = selectedNode?.kind === "file"
+    ? buildFileResponsibilities(selectedNode.path, role, relatedSymbols)
+    : [];
+  const fileFlow = selectedNode?.kind === "file"
+    ? buildFileFlow(selectedNode.path, role)
+    : [];
+  const suggestedFiles = selectedNode?.kind === "file"
+    ? [...new Set([...relatedFiles, fileMatter?.suggestedNext].filter(Boolean) as string[])].slice(0, 5)
+    : buildStartHereItems(summary).map((item) => item.path).slice(0, 4);
+  const normalizedFileSearch = fileSearchQuery.trim().toLowerCase();
+  const fileSearchMatchCount = normalizedFileSearch
+    ? source?.file.previewLines.filter((line) =>
+        line.content.toLowerCase().includes(normalizedFileSearch),
+      ).length ?? 0
+    : 0;
 
   async function copyToClipboard(action: "path" | "snippet", value: string) {
     if (!value) return;
@@ -1214,14 +1735,28 @@ function FileSourcePreview({
 
   if (!selectedNode) {
     return (
-      <div className="grid h-full place-items-center rounded-md border border-line bg-white p-6 text-center">
-        <div>
+      <div className="grid min-h-[560px] place-items-center rounded-md border border-line bg-white p-6 text-center shadow-sm">
+        <div className="max-w-xl">
           <FileCode2 className="mx-auto mb-3 text-signal" />
-          <p className="font-semibold">Select a file</p>
-          <p className="mt-2 max-w-md text-sm leading-6 text-graphite">
-            Choose a file from the explorer to inspect metadata and indexed
-            source preview.
+          <p className="text-lg font-semibold text-ink">Select a file to inspect</p>
+          <p className="mt-2 text-sm leading-6 text-graphite">
+            DevLens explains purpose, dependencies, important symbols, related files, and suggested next steps once you choose a file.
           </p>
+          {suggestedFiles.length ? (
+            <div className="mt-5 grid gap-2 text-left">
+              {suggestedFiles.map((path) => (
+                <button
+                  key={path}
+                  type="button"
+                  onClick={() => onOpenPath(path)}
+                  className="flex min-w-0 items-center gap-2 rounded-md border border-line bg-cloud px-3 py-2 text-sm font-medium text-graphite transition-colors hover:border-signal hover:bg-white hover:text-ink"
+                >
+                  <FileCode2 size={14} className="shrink-0 text-signal" />
+                  <span className="truncate">{path}</span>
+                </button>
+              ))}
+            </div>
+          ) : null}
         </div>
       </div>
     );
@@ -1244,9 +1779,11 @@ function FileSourcePreview({
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col rounded-md border border-line bg-white shadow-sm">
-      <div className="border-b border-line px-4 py-3">
+    <div className="min-h-0 rounded-md border border-line bg-white shadow-sm">
+      <div className="sticky top-0 z-20 border-b border-line bg-white/95 px-4 py-3 backdrop-blur">
         <div className="mb-3 flex min-w-0 flex-wrap items-center gap-1.5 text-xs text-graphite">
+          <span className="font-medium text-graphite">Repository</span>
+          <ChevronRight size={12} />
           {getBreadcrumbParts(selectedNode.path).map((part, index, parts) => (
             <span key={`${part}-${index}`} className="inline-flex min-w-0 items-center gap-1.5">
               <span
@@ -1267,19 +1804,12 @@ function FileSourcePreview({
               <p className="truncate text-lg font-semibold text-ink" title={selectedNode.path}>
                 {selectedNode.name}
               </p>
-              {isLikelyEntryPoint(selectedNode.path) ? (
-                <span className="shrink-0 rounded bg-mint/10 px-2 py-1 text-xs font-semibold text-mint">
-                  Entry point
-                </span>
-              ) : null}
-              {source?.file.isTest ? (
-                <span className="shrink-0 rounded bg-amber/10 px-2 py-1 text-xs font-semibold text-amber">
-                  Test
-                </span>
-              ) : null}
+              <span className="shrink-0 rounded bg-signal/10 px-2 py-1 text-xs font-semibold text-signal">
+                {role}
+              </span>
             </div>
-            <p className="mt-1 text-sm leading-6 text-graphite">
-              {getPathReason(selectedNode.path)}
+            <p className="mt-1 text-sm leading-6 text-graphite" title={selectedNode.path}>
+              {source?.file.language ?? selectedNode.language ?? "Unknown"} • {role} • {sourceLineCount ? `${sourceLineCount} preview lines` : "Preview pending"} • {formatBytes(source?.file.sizeBytes ?? selectedNode.sizeBytes ?? 0)}
             </p>
           </div>
           <div className="flex shrink-0 items-center gap-2">
@@ -1300,147 +1830,343 @@ function FileSourcePreview({
               <Copy size={13} />
               {copiedAction === "snippet" ? "Copied" : "Copy Snippet"}
             </button>
-          </div>
-        </div>
-
-        <div className="mt-3 grid grid-cols-4 gap-2 text-sm">
-          <div className="rounded-md border border-line bg-cloud px-3 py-2">
-            <p className="text-xs text-graphite">Language</p>
-            <p className="mt-0.5 truncate font-medium text-ink">
-              {source?.file.language ?? selectedNode.language ?? "Unknown"}
-            </p>
-          </div>
-          <div className="rounded-md border border-line bg-cloud px-3 py-2">
-            <p className="text-xs text-graphite">Size</p>
-            <p className="mt-0.5 font-medium text-ink">
-              {formatBytes(source?.file.sizeBytes ?? selectedNode.sizeBytes ?? 0)}
-            </p>
-          </div>
-          <div className="rounded-md border border-line bg-cloud px-3 py-2">
-            <p className="text-xs text-graphite">Type</p>
-            <p className="mt-0.5 truncate font-medium text-ink">
-              {source?.file.isTest
-                ? "Test file"
-                : source?.file.isGenerated
-                  ? "Generated file"
-                  : "Repository file"}
-            </p>
-          </div>
-          <div className="rounded-md border border-line bg-cloud px-3 py-2">
-            <p className="text-xs text-graphite">Preview</p>
-            <p className="mt-0.5 truncate font-medium text-ink">
-              {source?.file.previewStartLine && source?.file.previewEndLine
-                ? `Lines ${source.file.previewStartLine}-${source.file.previewEndLine}`
-                : "Pending"}
-            </p>
+            <button
+              type="button"
+              onClick={onExplainFile}
+              className="inline-flex h-8 items-center gap-1.5 rounded-md bg-ink px-2.5 text-xs font-semibold text-white transition-colors hover:bg-graphite"
+            >
+              <Sparkles size={13} />
+              Explain File
+            </button>
+            <button
+              type="button"
+              onClick={onFindReferences}
+              disabled={!selectedNode}
+              className="inline-flex h-8 items-center gap-1.5 rounded-md border border-line bg-white px-2 text-xs font-medium text-graphite transition-colors hover:border-signal hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Search size={13} />
+              Find References
+            </button>
+            <button
+              type="button"
+              onClick={() => setIsFullscreen(true)}
+              disabled={!hasSourceLines}
+              className="inline-flex h-8 items-center gap-1.5 rounded-md border border-line bg-white px-2 text-xs font-medium text-graphite transition-colors hover:border-signal hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Maximize2 size={13} />
+              Fullscreen
+            </button>
           </div>
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-auto p-4">
+      <div className="space-y-5 p-4">
         {fileMatter ? (
-          <section className="mb-4 rounded-md border border-line bg-white p-4 shadow-sm">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <p className="text-sm font-semibold text-ink">
-                  Why this file matters
-                </p>
-                <p className="mt-1 text-sm leading-6 text-graphite">
-                  {fileMatter.purpose}
-                </p>
-              </div>
-              <span className="shrink-0 rounded bg-cloud px-2 py-1 text-xs font-semibold text-graphite">
-                {fileMatter.role}
-              </span>
+          <section className="grid gap-4 lg:grid-cols-[minmax(0,1.2fr)_minmax(300px,0.8fr)]">
+            <div className="rounded-md border border-line bg-cloud/50 p-4">
+              <p className="text-xs font-semibold uppercase tracking-wide text-signal">
+                AI File Summary
+              </p>
+              <p className="mt-2 text-sm leading-6 text-ink">
+                {buildFileSummaryText(selectedNode.path, role, relatedSymbols)}
+              </p>
+              <p className="mt-2 text-sm leading-6 text-graphite">
+                {fileMatter.whyRead}
+              </p>
             </div>
-            <div className="mt-3 grid grid-cols-3 gap-3 text-sm">
-              <div className="rounded-md bg-cloud px-3 py-2">
-                <p className="text-xs font-medium uppercase tracking-wide text-graphite">
-                  Read it for
-                </p>
-                <p className="mt-1 leading-5 text-ink">{fileMatter.whyRead}</p>
-              </div>
-              <div className="rounded-md bg-cloud px-3 py-2">
-                <p className="text-xs font-medium uppercase tracking-wide text-graphite">
-                  Important symbols
-                </p>
-                <p className="mt-1 truncate text-ink">
-                  {relatedSymbols.length
-                    ? relatedSymbols.slice(0, 3).map((symbol) => symbol.name).join(", ")
-                    : "No symbols detected yet"}
-                </p>
-              </div>
-              <div className="rounded-md bg-cloud px-3 py-2">
-                <p className="text-xs font-medium uppercase tracking-wide text-graphite">
-                  Suggested next
-                </p>
-                <p className="mt-1 leading-5 text-ink">
-                  {fileMatter.suggestedNext}
-                </p>
-              </div>
+            <div className="rounded-md border border-line bg-white p-4">
+              <p className="text-sm font-semibold text-ink">Responsibilities</p>
+              <ul className="mt-3 grid gap-2 text-sm leading-5 text-graphite">
+                {responsibilities.length ? responsibilities.map((item) => (
+                  <li key={item} className="flex gap-2">
+                    <CheckCircle2 size={14} className="mt-0.5 shrink-0 text-mint" />
+                    <span>{item}</span>
+                  </li>
+                )) : (
+                  <li>Inspect the source and symbols to identify responsibilities.</li>
+                )}
+              </ul>
             </div>
           </section>
         ) : null}
 
-        {isLoading ? (
-          <div className="grid h-full min-h-[260px] place-items-center text-sm text-graphite">
-            <span className="inline-flex items-center gap-2">
-              <Loader2 size={16} className="animate-spin" />
-              Loading preview
+        <div className="flex flex-col gap-2 rounded-md border border-line bg-white p-3 md:flex-row md:items-center md:justify-between">
+          <div className="flex h-9 min-w-0 flex-1 items-center gap-2 rounded-md border border-line bg-cloud px-3 focus-within:border-signal">
+            <Search size={14} className="shrink-0 text-graphite" />
+            <input
+              value={fileSearchQuery}
+              onChange={(event) => setFileSearchQuery(event.target.value)}
+              disabled={!hasSourceLines}
+              className="min-w-0 flex-1 bg-transparent text-sm outline-none disabled:cursor-not-allowed"
+              placeholder="Search in this file..."
+            />
+          </div>
+          <span className="shrink-0 text-xs font-medium text-graphite">
+            {normalizedFileSearch
+              ? `${fileSearchMatchCount} match${fileSearchMatchCount === 1 ? "" : "es"}`
+              : "Search only within the selected file"}
+          </span>
+        </div>
+
+        <section className="overflow-hidden rounded-md border border-line bg-white shadow-sm">
+          <div className="sticky top-0 z-10 flex items-center justify-between gap-3 border-b border-line bg-[#111827] px-3 py-2 text-slate-100">
+            <div className="min-w-0">
+              <p className="truncate text-sm font-semibold">{selectedNode.path}</p>
+              <p className="text-xs text-slate-400">
+                {source?.file.previewStartLine && source?.file.previewEndLine
+                  ? `Lines ${source.file.previewStartLine}-${source.file.previewEndLine}`
+                  : "Indexed source preview"}
+              </p>
+            </div>
+            <span className="rounded bg-white/10 px-2 py-1 text-xs font-medium text-slate-200">
+              {source?.file.language ?? selectedNode.language ?? "code"}
             </span>
           </div>
-        ) : error ? (
-          <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm leading-6 text-red-700">
-            {error}
-          </div>
-        ) : source?.file.previewLines.length ? (
-          <div className="overflow-hidden rounded-md border border-line">
-            <div className="flex items-center justify-between border-b border-line bg-cloud px-3 py-2">
-              <p className="text-sm font-semibold text-ink">Code Preview</p>
-              <span className="text-xs font-medium text-graphite">
-                Lines {source.file.previewStartLine}-{source.file.previewEndLine}
+
+          {isLoading ? (
+            <div className="grid min-h-[520px] place-items-center bg-[#0f172a] text-sm text-slate-300">
+              <span className="inline-flex items-center gap-2">
+                <Loader2 size={16} className="animate-spin" />
+                Loading preview
               </span>
             </div>
+          ) : error ? (
+            <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm leading-6 text-red-700">
+              {error}
+            </div>
+          ) : source?.file.previewLines.length ? (
             <div
-              className="overflow-auto bg-[#0f172a] py-3 text-[13px] leading-6 text-slate-100"
-              style={{ height: sourcePreviewHeight }}
+              className="overflow-auto bg-[#0f172a] py-3 font-mono text-[13px] leading-6 text-slate-100"
+              style={{ height: sourcePreviewHeight, minHeight: 500 }}
             >
-              <div className="font-mono">
-                {source.file.previewLines.map((line, index) => (
-                  <div
-                    key={`${line.lineNumber}-${index}`}
-                    className={`grid grid-cols-[64px_1fr] px-3 ${
-                      highlightedLineRange &&
-                      line.lineNumber >= highlightedLineRange.startLine &&
-                      line.lineNumber <= highlightedLineRange.endLine
-                        ? "border-l-2 border-signal bg-signal/20"
-                        : "border-l-2 border-transparent"
-                    }`}
-                  >
-                    <span className="select-none pr-5 text-right text-slate-500">
-                      {line.lineNumber}
+              {source.file.previewLines.map((line, index) => (
+                <div
+                  key={`${line.lineNumber}-${index}`}
+                  className={`grid grid-cols-[64px_1fr] px-3 ${
+                    highlightedLineRange &&
+                    line.lineNumber >= highlightedLineRange.startLine &&
+                    line.lineNumber <= highlightedLineRange.endLine
+                      ? "border-l-2 border-signal bg-signal/20"
+                      : normalizedFileSearch &&
+                          line.content.toLowerCase().includes(normalizedFileSearch)
+                        ? "border-l-2 border-amber bg-amber/15"
+                      : "border-l-2 border-transparent hover:bg-white/5"
+                  }`}
+                >
+                  <span className="select-none pr-5 text-right text-slate-500">
+                    {line.lineNumber}
+                  </span>
+                  <code className="whitespace-pre-wrap break-words">
+                    {line.content || " "}
+                  </code>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="grid min-h-[520px] place-items-center bg-[#0f172a] p-6 text-center text-slate-300">
+              <div>
+                <FileCode2 className="mx-auto mb-3 text-signal" />
+                <p className="font-semibold text-white">No code preview yet</p>
+                <p className="mt-2 max-w-md text-sm leading-6">
+                  DevLens has file metadata for this path. Try another file or search for a function name to jump into source.
+                </p>
+              </div>
+            </div>
+          )}
+        </section>
+
+        <section className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
+          <div className="grid gap-4 md:grid-cols-3">
+            {[
+              ["Imports", imports],
+              ["Exports", exports],
+              ["Calls", calls],
+            ].map(([label, items]) => (
+              <div key={label as string} className="rounded-md border border-line bg-white p-4">
+                <p className="text-sm font-semibold text-ink">{label as string}</p>
+                <div className="mt-3 grid gap-2 text-sm">
+                  {(items as string[]).length ? (items as string[]).map((item) => (
+                    <span key={item} className="truncate rounded bg-cloud px-2 py-1 text-graphite" title={item}>
+                      {item}
                     </span>
-                    <code className="whitespace-pre-wrap break-words">
-                      {line.content || " "}
-                    </code>
+                  )) : (
+                    <p className="text-sm leading-6 text-graphite">No indexed {String(label).toLowerCase()} detected yet.</p>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="rounded-md border border-line bg-white p-4">
+            <p className="text-sm font-semibold text-ink">Request / Call Flow</p>
+            <div className="mt-3 flex flex-wrap items-center gap-2 text-sm">
+              {fileFlow.map((step, index) => (
+                <span key={`${step}-${index}`} className="inline-flex items-center gap-2">
+                  <span className={index === 1 ? "rounded bg-signal/10 px-2 py-1 font-semibold text-signal" : "rounded bg-cloud px-2 py-1 text-graphite"}>
+                    {step}
+                  </span>
+                  {index < fileFlow.length - 1 ? <ChevronRight size={14} className="text-graphite" /> : null}
+                </span>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        <section className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
+          <details
+            className="group rounded-md border border-line bg-white p-4"
+            open={areSignalsOpen}
+            onToggle={(event) => setAreSignalsOpen(event.currentTarget.open)}
+          >
+            <summary className="flex cursor-pointer list-none items-center justify-between gap-3">
+              <span className="text-sm font-semibold text-ink">
+                Related Code Signals ({relatedSymbols.length})
+              </span>
+              <ChevronDown
+                size={16}
+                className="text-graphite transition-transform group-open:rotate-180"
+              />
+            </summary>
+            {relatedSymbols.length ? (
+              <div className="mt-3 grid gap-2">
+                {relatedSymbols.slice(0, 8).map((symbol) => (
+                  <div key={symbol.id} className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 rounded-md bg-cloud px-3 py-2">
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-semibold text-ink">{symbol.name}</p>
+                      <p className="mt-0.5 text-xs text-graphite">
+                        {getSymbolKindMeta(symbol.kind).singular} • {formatCompactLineRange(symbol)}
+                      </p>
+                      <p className="mt-1 line-clamp-2 text-xs leading-5 text-graphite">
+                        {getSymbolPurpose(symbol)}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => onOpenSymbol(symbol.id)}
+                      className="h-8 rounded-md border border-line bg-white px-2 text-xs font-medium text-graphite hover:border-signal hover:text-ink"
+                    >
+                      Open
+                    </button>
                   </div>
                 ))}
               </div>
+            ) : (
+              <div className="mt-3 rounded-md border border-dashed border-line bg-cloud p-3 text-sm leading-6 text-graphite">
+                No functions, classes, or constants were detected in this file yet.
+              </div>
+            )}
+          </details>
+
+          <div className="rounded-md border border-line bg-white p-4">
+            <p className="text-sm font-semibold text-ink">Suggested Next Files</p>
+            <div className="mt-3 grid gap-2">
+              {suggestedFiles.length ? suggestedFiles.map((path, index) => (
+                <button
+                  key={`${path}-${index}`}
+                  type="button"
+                  onClick={() => onOpenPath(path)}
+                  className="grid grid-cols-[24px_minmax(0,1fr)] gap-2 rounded-md bg-cloud px-3 py-2 text-left text-sm hover:bg-signal/10"
+                >
+                  <span className="grid h-6 w-6 place-items-center rounded bg-white text-xs font-semibold text-signal">
+                    {index + 1}
+                  </span>
+                  <span className="min-w-0">
+                    <span className="block truncate font-medium text-ink">{path}</span>
+                    <span className="block truncate text-xs text-graphite">
+                      {getPathReason(path)}
+                    </span>
+                  </span>
+                </button>
+              )) : (
+                <p className="rounded-md bg-cloud p-3 text-sm leading-6 text-graphite">
+                  DevLens will suggest nearby files once related paths are available.
+                </p>
+              )}
             </div>
           </div>
-        ) : (
-          <div className="grid min-h-[260px] place-items-center rounded-md border border-dashed border-line bg-cloud p-6 text-center">
-            <div>
-              <FileCode2 className="mx-auto mb-3 text-signal" />
-              <p className="font-semibold text-ink">No code preview yet</p>
-              <p className="mt-2 max-w-md text-sm leading-6 text-graphite">
-                DevLens has file metadata for this path. Try another file or
-                search for a function name to jump into source.
+        </section>
+      </div>
+      {isFullscreen ? (
+        <div className="fixed inset-0 z-50 flex flex-col bg-[#0f172a] text-slate-100">
+          <div className="flex min-h-0 items-center justify-between gap-3 border-b border-white/10 bg-[#111827] px-4 py-3">
+            <div className="min-w-0">
+              <p className="truncate text-sm font-semibold text-white">
+                {selectedNode.name}
+              </p>
+              <p className="truncate text-xs text-slate-400">
+                {selectedNode.path} • {source?.file.language ?? selectedNode.language ?? "code"}
               </p>
             </div>
+            <div className="flex shrink-0 items-center gap-2">
+              <button
+                type="button"
+                onClick={() => copyToClipboard("path", selectedNode.path)}
+                className="inline-flex h-8 items-center gap-1.5 rounded-md border border-white/10 bg-white/5 px-2 text-xs font-medium text-slate-200 transition-colors hover:bg-white/10"
+              >
+                <Copy size={13} />
+                {copiedAction === "path" ? "Copied" : "Copy Path"}
+              </button>
+              <button
+                type="button"
+                onClick={() => copyToClipboard("snippet", sourceSnippet)}
+                disabled={!hasSourceLines}
+                className="inline-flex h-8 items-center gap-1.5 rounded-md border border-white/10 bg-white/5 px-2 text-xs font-medium text-slate-200 transition-colors hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <Copy size={13} />
+                {copiedAction === "snippet" ? "Copied" : "Copy Snippet"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsFullscreen(false)}
+                className="inline-flex h-8 items-center gap-1.5 rounded-md bg-white px-2.5 text-xs font-semibold text-ink"
+              >
+                <X size={13} />
+                Close Fullscreen
+              </button>
+            </div>
           </div>
-        )}
-      </div>
+          <div className="border-b border-white/10 bg-[#111827] px-4 py-2">
+            <div className="flex h-9 max-w-xl items-center gap-2 rounded-md border border-white/10 bg-white/5 px-3">
+              <Search size={14} className="shrink-0 text-slate-400" />
+              <input
+                value={fileSearchQuery}
+                onChange={(event) => setFileSearchQuery(event.target.value)}
+                className="min-w-0 flex-1 bg-transparent text-sm text-slate-100 outline-none placeholder:text-slate-500"
+                placeholder="Search in this file..."
+              />
+              {normalizedFileSearch ? (
+                <span className="text-xs text-slate-400">
+                  {fileSearchMatchCount}
+                </span>
+              ) : null}
+            </div>
+          </div>
+          <div className="min-h-0 flex-1 overflow-auto bg-[#0f172a] py-4 font-mono text-[13px] leading-6 text-slate-100">
+            {source?.file.previewLines.map((line, index) => (
+              <div
+                key={`fullscreen-${line.lineNumber}-${index}`}
+                className={`grid grid-cols-[72px_1fr] px-4 ${
+                  highlightedLineRange &&
+                  line.lineNumber >= highlightedLineRange.startLine &&
+                  line.lineNumber <= highlightedLineRange.endLine
+                    ? "border-l-2 border-signal bg-signal/20"
+                    : normalizedFileSearch &&
+                        line.content.toLowerCase().includes(normalizedFileSearch)
+                      ? "border-l-2 border-amber bg-amber/15"
+                      : "border-l-2 border-transparent hover:bg-white/5"
+                }`}
+              >
+                <span className="select-none pr-6 text-right text-slate-500">
+                  {line.lineNumber}
+                </span>
+                <code className="whitespace-pre-wrap break-words">
+                  {line.content || " "}
+                </code>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -2007,14 +2733,12 @@ function RepoBriefPanel({
   summary,
   isLoading,
   error,
-  onInspectSymbol,
   onOpenInFiles,
 }: {
   repositoryReady: boolean;
   summary: DocsSummaryResponse | null;
   isLoading: boolean;
   error: string | null;
-  onInspectSymbol: (symbolId: string) => void;
   onOpenInFiles: (symbol: { filePath: string }) => void;
 }) {
   return (
@@ -2059,27 +2783,22 @@ function RepoBriefPanel({
             {error}
           </div>
         ) : summary ? (
-          <div className="grid gap-3">
-            <details open className="group border-b border-line pb-4">
-              <summary className="flex cursor-pointer list-none items-center justify-between gap-3 py-1">
-                <span className="font-semibold text-ink">Repository Summary</span>
-                <ChevronDown size={16} className="text-graphite transition-transform group-open:rotate-180" />
-              </summary>
-              <section className="pt-3">
-              <div className="flex items-start justify-between gap-4">
+          <div className="space-y-8">
+            <section className="rounded-md border border-signal/15 bg-white p-6 shadow-sm">
+              <div className="flex items-start justify-between gap-5">
                 <div className="min-w-0">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-graphite">
-                    What is this repository?
+                  <p className="text-xs font-semibold uppercase tracking-wide text-signal">
+                    Repository Understanding
                   </p>
-                  <h2 className="mt-1 truncate text-xl font-semibold text-ink">
+                  <h2 className="mt-2 text-2xl font-semibold tracking-normal text-ink">
                     {summary.repository.owner}/{summary.repository.name}
                   </h2>
-                  <p className="mt-3 max-w-4xl text-sm leading-6 text-graphite">
-                    {buildSeniorRepoExplanation(summary)}
+                  <p className="mt-3 max-w-4xl text-base leading-7 text-ink">
+                    {summary.understanding.summary}
                   </p>
                 </div>
                 <span
-                  className={`shrink-0 rounded px-2 py-1 text-xs font-semibold ${
+                  className={`shrink-0 rounded-md px-2.5 py-1 text-xs font-semibold ${
                     summary.repository.analysisStatus === "COMPLETED"
                       ? "bg-mint/10 text-mint"
                       : "bg-cloud text-graphite"
@@ -2089,353 +2808,243 @@ function RepoBriefPanel({
                 </span>
               </div>
 
-              <div className="mt-4 grid grid-cols-4 gap-3">
-                {[
-                  {
-                    label: "Project Type",
-                    value: inferProjectType(summary),
-                  },
-                  {
-                    label: "Architecture",
-                    value: describeRepositoryArchitecture(summary),
-                  },
-                  {
-                    label: "Languages",
-                    value: summary.repository.detectedLanguages.length
-                      ? summary.repository.detectedLanguages.join(", ")
-                      : "Pending",
-                  },
-                  {
-                    label: "Frameworks",
-                    value: summary.repository.detectedFrameworks.length
-                      ? summary.repository.detectedFrameworks.join(", ")
-                      : "Pending",
-                  },
-                  {
-                    label: "Database",
-                    value: summary.repository.detectedFrameworks.some((framework) =>
-                      /prisma|postgres|mysql|sqlite|mongo|redis/i.test(framework),
-                    )
-                      ? "Detected"
-                      : "Not detected",
-                  },
-                ].map((item) => (
-                  <div
-                    key={item.label}
-                    className="rounded-md bg-cloud px-3 py-2"
-                  >
-                    <p className="text-xs font-medium uppercase tracking-wide text-graphite">
-                      {item.label}
-                    </p>
-                    <p className="mt-1 truncate text-sm font-semibold text-ink">
-                      {item.value}
-                    </p>
+              <div className="mt-6 grid gap-4 lg:grid-cols-[minmax(0,1.1fr)_minmax(280px,0.9fr)]">
+                <div className="rounded-md border border-line bg-cloud/40 p-4">
+                  <p className="text-sm font-semibold text-ink">
+                    What this project appears to do
+                  </p>
+                  <p className="mt-2 text-sm leading-6 text-graphite">
+                    {summary.understanding.purpose}
+                  </p>
+                  <div className="mt-4 grid gap-3 md:grid-cols-2">
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-wide text-graphite">
+                        Business domain
+                      </p>
+                      <p className="mt-1 text-sm leading-6 text-ink">
+                        {summary.understanding.domain}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-wide text-graphite">
+                        Architecture
+                      </p>
+                      <p className="mt-1 text-sm leading-6 text-ink">
+                        {summary.understanding.architecture}
+                      </p>
+                    </div>
                   </div>
-                ))}
-              </div>
-              </section>
-            </details>
-
-            <details open className="group rounded-md border border-signal/20 bg-signal/5 p-4">
-              <summary className="flex cursor-pointer list-none items-center justify-between gap-3">
-                <span className="font-semibold text-ink">I am new to this repo</span>
-                <ChevronDown size={16} className="text-signal transition-transform group-open:rotate-180" />
-              </summary>
-              <section className="pt-3">
-              <div className="flex items-start justify-between gap-4">
-                <div>
-                  <p className="mt-1 text-sm leading-6 text-graphite">
-                    Follow this onboarding path to understand the project in about{" "}
-                    {estimateOnboarding(summary)}.
-                  </p>
-                </div>
-                <Sparkles size={18} className="shrink-0 text-signal" />
-              </div>
-              <div className="mt-4 grid grid-cols-3 gap-3 text-sm">
-                <div className="rounded-md bg-white px-3 py-2">
-                  <p className="font-semibold text-ink">1. Read the story</p>
-                  <p className="mt-1 leading-5 text-graphite">
-                    Start with {buildStartHereItems(summary)[0]?.path ?? "README.md"} to learn purpose and usage.
-                  </p>
-                </div>
-                <div className="rounded-md bg-white px-3 py-2">
-                  <p className="font-semibold text-ink">2. Find the entry point</p>
-                  <p className="mt-1 leading-5 text-graphite">
-                    Inspect {buildStartHereItems(summary)[2]?.path ?? buildStartHereItems(summary)[1]?.path ?? "the main source file"} next.
-                  </p>
-                </div>
-                <div className="rounded-md bg-white px-3 py-2">
-                  <p className="font-semibold text-ink">3. Ask DevLens</p>
-                  <p className="mt-1 leading-5 text-graphite">
-                    Ask for request flow, important files, or selected file explanations.
-                  </p>
-                </div>
-              </div>
-              </section>
-            </details>
-
-            <details className="group border-t border-line pt-4">
-              <summary className="flex cursor-pointer list-none items-center justify-between gap-3">
-                <span className="font-semibold text-ink">Start Here + Key Files</span>
-                <ChevronDown size={16} className="text-graphite transition-transform group-open:rotate-180" />
-              </summary>
-              <section className="mt-4 grid grid-cols-2 gap-4">
-              <div className="rounded-md bg-cloud/60 p-4">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <p className="font-semibold text-ink">Start Here</p>
-                    <p className="mt-1 text-sm leading-6 text-graphite">
-                      Recommended reading path for a new developer.
-                    </p>
-                  </div>
-                  <BookOpen size={18} className="shrink-0 text-signal" />
                 </div>
 
-                <div className="mt-4 grid gap-2">
-                  {buildStartHereItems(summary).length ? (
-                    buildStartHereItems(summary).map((item, index) => (
+                <div className="rounded-md border border-line bg-cloud/40 p-4">
+                  <p className="text-sm font-semibold text-ink">
+                    Recommended reading order
+                  </p>
+                  <div className="mt-3 grid gap-2">
+                    {summary.understanding.readingOrder.slice(0, 6).map((item, index) => (
                       <div
-                        key={item.path}
-                            className="grid grid-cols-[28px_minmax(0,1fr)] gap-3 rounded-md bg-white px-3 py-2"
+                        key={item.file}
+                        className="grid grid-cols-[24px_minmax(0,1fr)] gap-2 text-sm"
                       >
-                        <span className="grid h-7 w-7 place-items-center rounded bg-white text-xs font-semibold text-signal">
+                        <span className="grid h-6 w-6 place-items-center rounded bg-white text-xs font-semibold text-signal">
                           {index + 1}
                         </span>
                         <div className="min-w-0">
-                          <p className="truncate text-sm font-semibold text-ink">
-                            {item.path}
+                          <p className="truncate font-medium text-ink">
+                            {item.file}
                           </p>
-                          <p className="mt-0.5 text-xs leading-5 text-graphite">
+                          <p className="truncate text-xs text-graphite">
                             {item.reason}
                           </p>
                         </div>
                       </div>
-                    ))
-                  ) : (
-                    <div className="rounded-md border border-line bg-cloud p-3 text-sm text-graphite">
-                      Start Here recommendations will appear after file analysis.
-                    </div>
-                  )}
+                    ))}
+                  </div>
                 </div>
               </div>
 
-              <div className="rounded-md bg-cloud/60 p-4">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <p className="font-semibold text-ink">Key Files</p>
-                    <p className="mt-1 text-sm leading-6 text-graphite">
-                      Important files with why they matter.
-                    </p>
+              <div className="mt-4 grid gap-4 lg:grid-cols-2">
+                <div className="rounded-md border border-line bg-white p-4">
+                  <p className="text-sm font-semibold text-ink">Core features</p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {summary.understanding.coreFeatures.length ? (
+                      summary.understanding.coreFeatures.map((feature) => (
+                        <span
+                          key={feature}
+                          className="rounded bg-signal/10 px-2 py-1 text-xs font-semibold text-signal"
+                        >
+                          {feature}
+                        </span>
+                      ))
+                    ) : (
+                      <p className="text-sm leading-6 text-graphite">
+                        DevLens needs more README, route, or module signals to infer features.
+                      </p>
+                    )}
                   </div>
-                  <File size={18} className="shrink-0 text-signal" />
                 </div>
-                <div className="mt-4 grid gap-3">
-                  {buildKeyFileItems(summary).length ? (
-                    buildKeyFileItems(summary).map((item) => (
+
+                <div className="rounded-md border border-line bg-white p-4">
+                  <p className="text-sm font-semibold text-ink">Main modules</p>
+                  <div className="mt-3 grid gap-2">
+                    {summary.understanding.mainModules.slice(0, 6).map((module) => (
                       <div
-                        key={item.path}
-                        className="flex min-w-0 items-start gap-2 rounded-md bg-white px-3 py-2"
+                        key={module.name}
+                        className="grid grid-cols-[120px_minmax(0,1fr)] gap-3 text-sm"
                       >
-                        <FileCode2 size={15} className="mt-0.5 shrink-0 text-signal" />
-                        <div className="min-w-0">
-                          <p className="truncate text-sm font-semibold text-ink">
-                            {item.path}
-                          </p>
-                          <p className="mt-0.5 text-xs leading-5 text-graphite">
-                            {item.reason}
-                          </p>
-                        </div>
+                        <p className="truncate font-semibold text-ink">
+                          {module.name}
+                        </p>
+                        <p className="text-graphite">{module.purpose}</p>
                       </div>
-                    ))
-                  ) : (
-                    <div
-                      className="rounded-md border border-line bg-cloud p-3 text-sm text-graphite"
-                    >
-                      Key files will appear after indexing.
-                    </div>
-                  )}
-                </div>
-              </div>
-              </section>
-            </details>
-
-            <details className="group border-t border-line pt-4">
-              <summary className="flex cursor-pointer list-none items-center justify-between gap-3">
-                <span className="font-semibold text-ink">Key Functions & Exports</span>
-                <ChevronDown size={16} className="text-graphite transition-transform group-open:rotate-180" />
-              </summary>
-              <section className="mt-4">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <p className="font-semibold text-ink">Key Functions & Exports</p>
-                  <p className="mt-1 text-sm leading-6 text-graphite">
-                    Functions, classes, and exports that can orient a developer.
-                  </p>
-                </div>
-                <Braces size={18} className="shrink-0 text-signal" />
-              </div>
-
-              <div className="mt-4 grid grid-cols-2 gap-4">
-                <div>
-                  <p className="text-sm font-semibold text-ink">
-                    Most Referenced
-                  </p>
-                  <div className="mt-2 grid gap-2">
-                    {summary.symbols.mostConnected.length ? (
-                      summary.symbols.mostConnected.slice(0, 5).map((symbol) => (
-                        <div
-                          key={symbol.id}
-                          className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 rounded-md border border-line p-3"
-                        >
-                          <div className="min-w-0">
-                            <p className="truncate text-sm font-semibold text-ink">
-                              {describeSymbolImportance(symbol)}
-                            </p>
-                            <p className="mt-1 truncate text-xs text-graphite">
-                              {getSymbolKindMeta(symbol.kind).singular} -{" "}
-                              {symbol.filePath} -{" "}
-                              {formatCompactLineRange(symbol)}
-                            </p>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <span className="rounded bg-cloud px-2 py-1 text-xs font-semibold text-graphite">
-                              {formatUsageCount(symbol.connectionCount, "ref")}
-                            </span>
-                            <button
-                              type="button"
-                              onClick={() => onInspectSymbol(symbol.id)}
-                              className="inline-flex h-8 items-center justify-center rounded-md border border-line bg-white px-2 text-xs font-medium text-graphite hover:border-signal hover:text-ink"
-                            >
-                              Inspect
-                            </button>
-                          </div>
-                        </div>
-                      ))
-                    ) : (
-                      <div className="rounded-md border border-line bg-cloud p-3 text-sm text-graphite">
-                        Important code signals will appear after analysis.
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                <div>
-                  <p className="text-sm font-semibold text-ink">
-                    Public Exports
-                  </p>
-                  <div className="mt-2 grid max-h-[268px] gap-2 overflow-auto pr-1">
-                    {summary.symbols.exported.length ? (
-                      summary.symbols.exported.slice(0, 5).map((symbol) => (
-                        <div
-                          key={symbol.id}
-                          className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 rounded-md border border-line p-3"
-                        >
-                          <div className="min-w-0">
-                            <p className="truncate text-sm font-semibold text-ink">
-                              {symbol.name}
-                            </p>
-                            <p className="mt-1 truncate text-xs text-graphite">
-                              {getSymbolKindMeta(symbol.kind).singular} -{" "}
-                              {symbol.filePath}
-                            </p>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => onOpenInFiles(symbol)}
-                            className="inline-flex h-8 items-center justify-center gap-1.5 rounded-md border border-line bg-white px-2 text-xs font-medium text-graphite hover:border-signal hover:text-ink"
-                          >
-                            <ExternalLink size={13} />
-                            File
-                          </button>
-                        </div>
-                      ))
-                    ) : (
-                      <div className="rounded-md border border-line bg-cloud p-3 text-sm text-graphite">
-                        Public exports will appear when they are detected.
-                      </div>
-                    )}
+                    ))}
                   </div>
                 </div>
               </div>
-              </section>
-            </details>
+            </section>
 
-            <details className="group border-t border-line pt-4">
-              <summary className="flex cursor-pointer list-none items-center justify-between gap-3">
-                <span className="font-semibold text-ink">Engineering Snapshot</span>
-                <ChevronDown size={16} className="text-graphite transition-transform group-open:rotate-180" />
-              </summary>
-              <section className="mt-4 rounded-md bg-cloud/50 p-4">
-              <div className="flex items-center justify-between gap-3">
+            <section>
+              <div className="mb-3 flex items-center justify-between gap-3">
                 <div>
-                  <p className="font-semibold text-ink">Engineering Snapshot</p>
-                  <p className="mt-1 text-sm leading-6 text-graphite">
-                    Concise signals to set expectations before reading code.
+                  <p className="text-xs font-semibold uppercase tracking-wide text-graphite">
+                    Technical Overview
                   </p>
+                  <h3 className="mt-1 text-lg font-semibold text-ink">
+                    How is it built?
+                  </h3>
                 </div>
                 <Workflow size={18} className="shrink-0 text-signal" />
               </div>
 
-              <div className="mt-4 grid grid-cols-5 gap-3">
-                {[
-                  {
-                    icon: Workflow,
-                    label: "Architecture",
-                    value: inferProjectType(summary),
-                    description: describeRepositoryArchitecture(summary),
-                  },
-                  {
-                    icon: CheckCircle2,
-                    label: "Testing",
-                    value: summary.architecture.testFileCount ? "Present" : "Light",
-                    description: summary.architecture.testFileCount
-                      ? `${summary.architecture.testFileCount} test file${
-                          summary.architecture.testFileCount === 1 ? "" : "s"
-                        } detected.`
-                      : "Few test signals detected; read source and examples carefully.",
-                  },
-                  {
-                    icon: Braces,
-                    label: "Complexity",
-                    value: inferComplexity(summary),
-                    description: `${summary.repository.fileCount} files and ${summary.symbols.counts.total} code signals.`,
-                  },
-                  {
-                    icon: GitPullRequest,
-                    label: "Entry point",
-                    value: buildStartHereItems(summary)[0]?.path ?? "Pending",
-                    description: "Best first source or documentation file to open.",
-                  },
-                  {
-                    icon: Clock3,
-                    label: "Onboarding",
-                    value: estimateOnboarding(summary),
-                    description: "Estimated time to become productive in this repository.",
-                  },
-                ].map((item) => {
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                {buildTechnicalOverviewItems(summary).map((item) => {
                   const Icon = item.icon;
                   return (
-                  <div
-                    key={item.label}
-                    className="rounded-md bg-white p-3 shadow-sm"
-                  >
-                    <div className="flex items-center gap-2">
-                      <Icon size={15} className="shrink-0 text-signal" />
-                      <p className="text-xs font-medium uppercase tracking-wide text-graphite">
-                        {item.label}
+                    <div
+                      key={item.label}
+                      className="rounded-md border border-line bg-white p-3 shadow-sm"
+                    >
+                      <div className="flex items-center gap-2">
+                        <Icon size={15} className="shrink-0 text-signal" />
+                        <p className="text-[11px] font-semibold uppercase tracking-wide text-graphite">
+                          {item.label}
+                        </p>
+                      </div>
+                      <p
+                        className="mt-2 truncate text-sm font-semibold text-ink"
+                        title={item.value}
+                      >
+                        {item.value}
+                      </p>
+                      <p className="mt-1 line-clamp-2 text-xs leading-5 text-graphite">
+                        {item.description}
                       </p>
                     </div>
-                    <p className="mt-1 truncate text-sm font-semibold text-ink">
-                      {item.value}
-                    </p>
-                    <p className="mt-1 text-xs leading-5 text-graphite">
-                      {item.description}
-                    </p>
-                  </div>
-                );
+                  );
                 })}
               </div>
-              </section>
+            </section>
+
+            <section>
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-graphite">
+                    Core Components
+                  </p>
+                  <h3 className="mt-1 text-lg font-semibold text-ink">
+                    Which architectural modules matter?
+                  </h3>
+                </div>
+                <Braces size={18} className="shrink-0 text-signal" />
+              </div>
+
+              {buildCoreComponents(summary).length ? (
+                <div className="grid gap-3 lg:grid-cols-2">
+                  {buildCoreComponents(summary).map((component) => (
+                    <div
+                      key={component.name}
+                      className="rounded-md border border-line bg-white p-4 shadow-sm"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="flex min-w-0 items-center gap-2">
+                            <p className="truncate text-sm font-semibold text-ink">
+                              {component.name}
+                            </p>
+                            <span
+                              className={`shrink-0 rounded px-1.5 py-0.5 text-[11px] font-semibold ${
+                                component.importance === "High"
+                                  ? "bg-signal/10 text-signal"
+                                  : component.importance === "Medium"
+                                    ? "bg-amber/10 text-amber"
+                                    : "bg-cloud text-graphite"
+                              }`}
+                            >
+                              {component.importance}
+                            </span>
+                          </div>
+                          <p className="mt-2 text-sm leading-6 text-graphite">
+                            {component.purpose}
+                          </p>
+                        </div>
+                        <span className="shrink-0 rounded bg-cloud px-2 py-1 text-xs font-semibold text-graphite">
+                          {component.fileCount} file{component.fileCount === 1 ? "" : "s"}
+                        </span>
+                      </div>
+
+                      <div className="mt-3 flex items-center justify-between gap-3 border-t border-line pt-3">
+                        <p
+                          className="min-w-0 truncate text-xs text-graphite"
+                          title={component.representativePath}
+                        >
+                          {component.representativePath ?? "No representative path"}
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            component.representativePath &&
+                            onOpenInFiles({ filePath: component.representativePath })
+                          }
+                          disabled={!component.representativePath}
+                          className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-line bg-white px-2 text-xs font-medium text-graphite transition-colors hover:border-signal hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          <ExternalLink size={13} />
+                          Open
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="rounded-md border border-line bg-cloud p-4 text-sm leading-6 text-graphite">
+                  Core components will appear when DevLens detects architectural paths such as controllers, services, routes, database, middleware, utilities, or configuration.
+                </div>
+              )}
+            </section>
+
+            <details className="group rounded-md border border-line bg-white p-4">
+              <summary className="flex cursor-pointer list-none items-center justify-between gap-3">
+                <span className="font-semibold text-ink">Additional analysis notes</span>
+                <ChevronDown size={16} className="text-graphite transition-transform group-open:rotate-180" />
+              </summary>
+              <div className="mt-4 grid gap-3 text-sm leading-6 text-graphite">
+                {summary.docsPreview
+                  .filter((item) => !/overview|key files|public symbols/i.test(item.title))
+                  .map((item) => (
+                    <div key={item.title} className="rounded-md bg-cloud px-3 py-2">
+                      <p className="font-semibold text-ink">{item.title}</p>
+                      <p className="mt-1">{item.body}</p>
+                    </div>
+                  ))}
+                {summary.queuedSections.length ? (
+                  <div className="rounded-md bg-cloud px-3 py-2">
+                    <p className="font-semibold text-ink">Queued follow-ups</p>
+                    <p className="mt-1">
+                      {summary.queuedSections.map((section) => section.title).join(", ")}
+                    </p>
+                  </div>
+                ) : null}
+              </div>
             </details>
           </div>
         ) : (
@@ -2500,7 +3109,9 @@ export default function Home() {
   const [activeWorkspaceTab, setActiveWorkspaceTab] =
     useState<WorkspaceTab>("brief");
   const [devlensPrompt, setDevlensPrompt] = useState("Where should I start?");
-  const [devlensAnswer, setDevlensAnswer] = useState<string | null>(null);
+  const [devlensResponse, setDevlensResponse] =
+    useState<DevlensResponse | null>(null);
+  const [isAskingDevlens, setIsAskingDevlens] = useState(false);
   const [sidebarCopiedPath, setSidebarCopiedPath] = useState<string | null>(null);
 
   const repository = job?.repository;
@@ -2551,24 +3162,6 @@ export default function Home() {
         : [],
     [selectedNode, symbolsResponse],
   );
-  const devlensSources = useMemo(() => {
-    const sources = new Map<
-      string,
-      { path: string; startLine?: number; endLine?: number }
-    >();
-    if (selectedNode?.kind === "file") sources.set(selectedNode.path, { path: selectedNode.path });
-    buildStartHereItems(docsSummary)
-      .slice(0, 2)
-      .forEach((item) => sources.set(item.path, { path: item.path }));
-    searchResponse?.results.slice(0, 2).forEach((result) =>
-      sources.set(result.path, {
-        path: result.path,
-        startLine: result.startLine,
-        endLine: result.endLine,
-      }),
-    );
-    return [...sources.values()].slice(0, 4);
-  }, [docsSummary, searchResponse, selectedNode]);
   const activeSymbolRelations = selectedSymbol
     ? activeSymbolTab === "calls"
       ? selectedSymbol.outgoingCalls
@@ -2889,6 +3482,8 @@ export default function Home() {
     setSymbolQuery("");
     setSymbolKindFilter("all");
     setActiveSymbolTab("references");
+    setDevlensResponse(null);
+    setIsAskingDevlens(false);
     setIsSubmitting(true);
 
     try {
@@ -2928,6 +3523,19 @@ export default function Home() {
     });
   }
 
+  async function fetchRepositorySearch(query: string, limit = 8) {
+    if (!job?.repositoryId || !repositoryReady) return null;
+
+    const response = await fetch(
+      `${API_URL}/repositories/${job.repositoryId}/search?q=${encodeURIComponent(query)}&limit=${limit}`,
+    );
+    if (!response.ok) {
+      const body = await response.json().catch(() => null);
+      throw new Error(body?.message ?? "Unable to search repository.");
+    }
+    return (await response.json()) as SearchResponse;
+  }
+
   async function searchRepository(
     event?: React.FormEvent<HTMLFormElement>,
     nextQuery?: string,
@@ -2940,14 +3548,8 @@ export default function Home() {
     setSearchError(null);
 
     try {
-      const response = await fetch(
-        `${API_URL}/repositories/${job.repositoryId}/search?q=${encodeURIComponent(query)}&limit=8`,
-      );
-      if (!response.ok) {
-        const body = await response.json().catch(() => null);
-        throw new Error(body?.message ?? "Unable to search repository.");
-      }
-      setSearchResponse((await response.json()) as SearchResponse);
+      const nextSearchResponse = await fetchRepositorySearch(query, 8);
+      if (nextSearchResponse) setSearchResponse(nextSearchResponse);
     } catch (err) {
       setSearchError(
         err instanceof Error ? err.message : "Unable to search repository.",
@@ -3028,6 +3630,26 @@ export default function Home() {
     setActiveWorkspaceTab("files");
   }
 
+  function openPathInFiles(path: string) {
+    focusSymbolFile({ filePath: path });
+    setActiveWorkspaceTab("files");
+  }
+
+  function explainSelectedFile() {
+    if (selectedNode?.kind !== "file") return;
+    void askDevlens(`Explain ${selectedNode.path} and how it fits into this repository.`);
+  }
+
+  function findSelectedFileReferences() {
+    if (selectedNode?.kind !== "file") return;
+    const symbolQuery =
+      selectedFileSymbols[0]?.name ??
+      selectedNode.name.replace(/\.[^.]+$/, "");
+    setSearchQuery(symbolQuery);
+    setActiveWorkspaceTab("search");
+    void searchRepository(undefined, symbolQuery);
+  }
+
   function selectSymbol(symbolId: string) {
     const symbol =
       symbolsResponse?.symbols.find((item) => item.id === symbolId) ??
@@ -3049,80 +3671,219 @@ export default function Home() {
     setActiveWorkspaceTab("files");
   }
 
-  function buildDevlensResponse(prompt: string): string {
+  function buildDevlensResponse(
+    prompt: string,
+    assistantSearch?: SearchResponse | null,
+  ): DevlensResponse {
     if (!repositoryReady || !docsSummary) {
-      return "Analyze a repository first. Once DevLens has file and symbol context, this panel can guide you through the repo with file-backed starting points.";
+      return {
+        answer:
+          "Analyze a repository first. Once DevLens has file and symbol context, this panel can guide you through the repo with file-backed starting points.",
+        citations: [],
+      };
     }
 
     const startHere = buildStartHereItems(docsSummary);
     const keyFiles = buildKeyFileItems(docsSummary);
     const codeSignals = docsSummary.symbols.mostConnected.slice(0, 3);
+    const searchHits = assistantSearch?.results ?? [];
 
     if (/start/i.test(prompt)) {
-      return startHere.length
-        ? `Start with ${startHere
-            .map((item, index) => `${index + 1}. ${item.path} (${item.reason})`)
-            .join(" ")}. This path gives you purpose, entry points, and expected behavior before you dive deeper.`
-        : "Start with the README, package metadata, and the first source entry point you find in the file tree.";
+      return {
+        answer: startHere.length
+          ? `Start with ${startHere
+              .map((item, index) => `${index + 1}. ${item.path} (${item.reason})`)
+              .join(" ")}. This path gives you purpose, entry points, and expected behavior before you dive deeper.`
+          : "Start with the README, package metadata, and the first source entry point you find in the file tree.",
+        citations: startHere
+          .slice(0, 4)
+          .map((item) => buildPathCitation(item.path, item.reason)),
+      };
     }
 
     if (/important files/i.test(prompt) || /business logic/i.test(prompt)) {
-      return keyFiles.length
-        ? `The most useful files to inspect are ${keyFiles
-            .map((item) => `${item.path} (${item.reason})`)
-            .join("; ")}. Open them from the file tree to read the source preview.`
-        : "DevLens has not identified key files yet, but the file tree and search can still help you find entry points.";
+      const citations = searchHits.length
+        ? searchHits.slice(0, 4).map(buildSearchCitation)
+        : keyFiles
+            .slice(0, 4)
+            .map((item) => buildPathCitation(item.path, item.reason));
+
+      return {
+        answer: searchHits.length
+          ? `The strongest current matches are ${searchHits
+              .slice(0, 4)
+              .map((result) => `${result.path} (${formatCompactLineRange(result)})`)
+              .join("; ")}. Open the citations to inspect the exact source lines.`
+          : keyFiles.length
+            ? `The most useful files to inspect are ${keyFiles
+                .map((item) => `${item.path} (${item.reason})`)
+                .join("; ")}. Open the citations to read the indexed source preview.`
+            : "DevLens has not identified key files yet, but the file tree and search can still help you find entry points.",
+        citations,
+      };
     }
 
     if (/routing|request flow/i.test(prompt)) {
-      return `This looks like a ${inferProjectType(
-        docsSummary,
-      )}. Search for terms like route, handler, controller, middleware, and request to trace the flow through source files.`;
+      return {
+        answer: searchHits.length
+          ? `This looks like a ${inferProjectType(
+              docsSummary,
+            )}. The current route-flow matches point to ${searchHits
+              .slice(0, 4)
+              .map((result) => `${result.path} (${formatCompactLineRange(result)})`)
+              .join("; ")}. Follow those citations first, then inspect nearby handlers or middleware.`
+          : `This looks like a ${inferProjectType(
+              docsSummary,
+            )}. Search for terms like route, handler, controller, middleware, and request to trace the flow through source files.`,
+        citations: searchHits.slice(0, 4).map(buildSearchCitation),
+      };
     }
 
     if (/authentication|database/i.test(prompt)) {
       const term = /authentication/i.test(prompt)
         ? "auth, session, token, middleware, login"
         : "database, prisma, model, repository, query";
-      return `Use Search for ${term}. DevLens will open matching files in the inspection workspace so you can follow the implementation from source.`;
+      return {
+        answer: searchHits.length
+          ? `DevLens found ${searchHits.length} matches for ${term}. Start with ${searchHits
+              .slice(0, 4)
+              .map((result) => `${result.path} (${formatCompactLineRange(result)})`)
+              .join("; ")} and use the citations to open the exact lines.`
+          : `I did not find a strong indexed match for ${term}. Try Search with a narrower project term, then DevLens can cite the matching source lines.`,
+        citations: searchHits.slice(0, 4).map(buildSearchCitation),
+      };
     }
 
     if (/architecture/i.test(prompt)) {
-      return `${inferProjectType(docsSummary)} with ${
-        docsSummary.repository.detectedFrameworks.join(", ") || "no major framework detected"
-      }. Complexity is ${inferComplexity(
-        docsSummary,
-      ).toLowerCase()}, and the recommended onboarding time is ${estimateOnboarding(
-        docsSummary,
-      )}. Start with the files in the Repository Guide, then inspect related code signals.`;
+      return {
+        answer: `${inferProjectType(docsSummary)} with ${
+          docsSummary.repository.detectedFrameworks.join(", ") || "no major framework detected"
+        }. Complexity is ${inferComplexity(
+          docsSummary,
+        ).toLowerCase()}, and the recommended onboarding time is ${estimateOnboarding(
+          docsSummary,
+        )}. Start with the files in the Repository Guide, then inspect related code signals.`,
+        citations: dedupeCitations([
+          ...startHere.slice(0, 2).map((item) => buildPathCitation(item.path, item.reason)),
+          ...codeSignals.slice(0, 2).map(buildSymbolCitation),
+        ]),
+      };
     }
 
-    if (/selected file/i.test(prompt)) {
-      return selectedNode?.kind === "file"
-        ? `${selectedNode.path} is selected. Use the source preview and line numbers to inspect its role, then search for its exports or key function names.`
-        : "Select a file in the explorer first, then DevLens can ground the explanation in that file.";
+    if (/selected file/i.test(prompt) || /explain .*fits into/i.test(prompt)) {
+      if (selectedNode?.kind !== "file") {
+        return {
+          answer:
+            "Select a file in the explorer first, then DevLens can ground the explanation in that file.",
+          citations: [],
+        };
+      }
+
+      const previewStart = selectedFileSource?.file.previewStartLine ?? undefined;
+      const previewEnd = selectedFileSource?.file.previewEndLine ?? undefined;
+      const fileMatter = buildFileMatterSummary(selectedNode.path, selectedFileSymbols);
+
+      return {
+        answer: `${selectedNode.path} is selected. ${fileMatter.purpose} ${fileMatter.whyRead} ${
+          previewStart && previewEnd
+            ? `The visible source preview covers ${formatCompactLineRange({
+                startLine: previewStart,
+                endLine: previewEnd,
+              })}.`
+            : "Open the source preview for line-level context."
+        }`,
+        citations: dedupeCitations([
+          {
+            path: selectedNode.path,
+            label: selectedNode.path,
+            reason: fileMatter.role,
+            startLine: previewStart,
+            endLine: previewEnd,
+          },
+          ...selectedFileSymbols.slice(0, 3).map(buildSymbolCitation),
+        ]),
+      };
     }
 
     if (/structured|repository/i.test(prompt)) {
-      return `${docsSummary.overview.text} It appears to be a ${inferProjectType(
-        docsSummary,
-      )} with ${docsSummary.repository.fileCount} files, ${
-        docsSummary.repository.detectedLanguages.join(", ") || "detected source"
-      }, and ${docsSummary.symbols.counts.total} code signals.`;
+      return {
+        answer: `${docsSummary.overview.text} It appears to be a ${inferProjectType(
+          docsSummary,
+        )} with ${docsSummary.repository.fileCount} files, ${
+          docsSummary.repository.detectedLanguages.join(", ") || "detected source"
+        }, and ${docsSummary.symbols.counts.total} code signals.`,
+        citations: dedupeCitations([
+          ...startHere.slice(0, 3).map((item) => buildPathCitation(item.path, item.reason)),
+          ...codeSignals.slice(0, 2).map(buildSymbolCitation),
+        ]),
+      };
     }
 
     if (codeSignals.length) {
-      return `Key code signals include ${codeSignals
-        .map((symbol) => `${symbol.name} in ${symbol.filePath}`)
-        .join("; ")}. These are good anchors for understanding behavior.`;
+      return {
+        answer: `Key code signals include ${codeSignals
+          .map((symbol) => `${symbol.name} in ${symbol.filePath}`)
+          .join("; ")}. These are good anchors for understanding behavior.`,
+        citations: codeSignals.map(buildSymbolCitation),
+      };
     }
 
-    return "Use the Repository Guide first, then open key files and search for feature terms. Full generated answers with clickable citations can build on this context next.";
+    return {
+      answer:
+        "Use the Repository Guide first, then open key files and search for feature terms. DevLens will keep answers tied to the indexed files and source lines it can cite.",
+      citations: startHere
+        .slice(0, 3)
+        .map((item) => buildPathCitation(item.path, item.reason)),
+    };
   }
 
-  function askDevlens(prompt: string) {
+  function getAssistantSearchQuery(prompt: string): string | null {
+    if (/routing|request flow/i.test(prompt)) {
+      return "route handler controller middleware request";
+    }
+    if (/authentication/i.test(prompt)) {
+      return "auth session token middleware login";
+    }
+    if (/database/i.test(prompt)) {
+      return "database prisma model repository query";
+    }
+    if (/business logic/i.test(prompt)) {
+      return "service handler controller business logic";
+    }
+    return null;
+  }
+
+  async function askDevlens(prompt: string) {
+    const trimmedPrompt = prompt.trim();
+    if (!trimmedPrompt) return;
+
     setDevlensPrompt(prompt);
-    setDevlensAnswer(buildDevlensResponse(prompt));
+    setIsAskingDevlens(true);
+
+    try {
+      const assistantSearchQuery = getAssistantSearchQuery(trimmedPrompt);
+      const assistantSearch =
+        assistantSearchQuery && repositoryReady
+          ? await fetchRepositorySearch(assistantSearchQuery, 5)
+          : null;
+
+      if (assistantSearch) {
+        setSearchQuery(assistantSearch.query);
+        setSearchResponse(assistantSearch);
+      }
+
+      setDevlensResponse(buildDevlensResponse(trimmedPrompt, assistantSearch));
+    } catch (err) {
+      setDevlensResponse({
+        answer:
+          err instanceof Error
+            ? err.message
+            : "DevLens could not gather repository context for that question.",
+        citations: [],
+      });
+    } finally {
+      setIsAskingDevlens(false);
+    }
   }
 
   const activeStepIndex = getStepIndex(job?.currentStep);
@@ -3148,8 +3909,8 @@ export default function Home() {
         </div>
       </header>
 
-      <section className="grid min-h-[calc(100vh-4rem)] grid-cols-[300px_1fr_360px]">
-        <aside className="flex min-h-0 flex-col border-r border-line bg-white p-4">
+      <section className="grid min-h-[calc(100vh-4rem)] grid-cols-1 xl:grid-cols-[300px_minmax(0,1fr)_360px]">
+        <aside className="flex min-h-0 flex-col border-b border-line bg-white p-4 xl:border-b-0 xl:border-r">
           <div className="rounded-md border border-line bg-cloud p-3">
             <div className="flex items-center justify-between gap-3">
               <div className="min-w-0">
@@ -3327,7 +4088,7 @@ export default function Home() {
           </div>
         </aside>
 
-        <section className="min-h-0 overflow-auto p-6">
+        <section className="min-h-0 overflow-auto p-4 md:p-6">
           <div className="mb-6">
             <h1 className="text-2xl font-semibold tracking-normal">
               Repository Workspace
@@ -3339,7 +4100,7 @@ export default function Home() {
           </div>
 
           <div className="mb-6 rounded-md border border-line bg-white p-4">
-            <div className="flex gap-3">
+            <div className="grid gap-3 md:grid-cols-[1fr_auto]">
               <input
                 value={repoUrl}
                 onChange={(event) => setRepoUrl(event.target.value)}
@@ -3349,7 +4110,7 @@ export default function Home() {
               <button
                 onClick={analyzeRepository}
                 disabled={isRunning}
-                className="inline-flex h-11 items-center gap-2 rounded-md bg-signal px-4 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
+                className="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-signal px-4 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {isRunning ? (
                   <Loader2 size={17} className="animate-spin" />
@@ -3392,7 +4153,7 @@ export default function Home() {
           </div>
 
           <div className="mb-6 rounded-md border border-line bg-white px-4 py-3 shadow-sm">
-            <div className="grid grid-cols-6 gap-3">
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-3 2xl:grid-cols-6">
             {[
               [
                 "Repository",
@@ -3487,19 +4248,19 @@ export default function Home() {
                     </button>
                     <button
                       type="button"
-                      onClick={() => askDevlens("Explain selected file")}
+                      onClick={explainSelectedFile}
                       disabled={selectedNode?.kind !== "file"}
                       className="inline-flex h-8 items-center gap-1.5 rounded-md border border-line bg-white px-2 text-xs font-medium text-graphite transition-colors hover:border-signal hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       <Sparkles size={13} />
-                      Explain
+                      Explain File
                     </button>
                   </div>
                 </div>
               </div>
 
-              <div className="grid h-[640px] grid-rows-[minmax(0,1fr)_auto] bg-cloud/50">
-                <div className="min-h-0 overflow-auto p-4">
+              <div className="bg-cloud/50">
+                <div className="p-4">
                   <FileSourcePreview
                     repositoryReady={repositoryReady}
                     selectedNode={selectedNode}
@@ -3508,73 +4269,12 @@ export default function Home() {
                     source={selectedFileSource}
                     isLoading={isLoadingFileSource}
                     error={fileSourceError}
+                    summary={docsSummary}
+                    onExplainFile={explainSelectedFile}
+                    onFindReferences={findSelectedFileReferences}
+                    onOpenPath={openPathInFiles}
+                    onOpenSymbol={inspectSymbol}
                   />
-                </div>
-
-                <div className="border-t border-line bg-white p-4">
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <p className="text-sm font-semibold text-ink">
-                        Related Code Signals
-                      </p>
-                      <p className="mt-0.5 text-xs text-graphite">
-                        Symbols found in the selected file.
-                      </p>
-                    </div>
-                    <span className="rounded bg-cloud px-2 py-1 text-xs font-semibold text-graphite">
-                      {selectedFileSymbols.length}
-                    </span>
-                  </div>
-
-                  {selectedFileSymbols.length ? (
-                    <div className="mt-3 grid max-h-52 grid-cols-2 gap-2 overflow-auto">
-                      {selectedFileSymbols.slice(0, 6).map((symbol) => (
-                        <div
-                          key={symbol.id}
-                          className="rounded-md border border-line bg-cloud/60 p-3"
-                        >
-                          <div className="flex items-start justify-between gap-2">
-                            <div className="min-w-0">
-                              <p className="truncate text-sm font-semibold text-ink">
-                                {symbol.name}
-                              </p>
-                              <p className="mt-0.5 truncate text-xs text-graphite">
-                                {getSymbolKindMeta(symbol.kind).singular} -{" "}
-                                {formatCompactLineRange(symbol)}
-                              </p>
-                            </div>
-                            <button
-                              type="button"
-                              onClick={() => inspectSymbol(symbol.id)}
-                              className="shrink-0 rounded border border-line bg-white px-2 py-1 text-xs font-medium text-graphite hover:border-signal hover:text-ink"
-                            >
-                              Open
-                            </button>
-                          </div>
-                          <p className="mt-2 text-xs leading-5 text-graphite">
-                            {getSymbolPurpose(symbol)}
-                          </p>
-                          <div className="mt-2 flex flex-wrap gap-1.5 text-[11px] font-medium text-graphite">
-                            <span className="rounded bg-white px-1.5 py-0.5">
-                              Calls {symbol.outgoingCalls.length}
-                            </span>
-                            <span className="rounded bg-white px-1.5 py-0.5">
-                              Uses {symbol.outgoingReferences.length}
-                            </span>
-                            <span className="rounded bg-white px-1.5 py-0.5">
-                              Referenced by {symbol.incomingReferences.length}
-                            </span>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="mt-3 rounded-md border border-dashed border-line bg-cloud p-3 text-sm leading-6 text-graphite">
-                      {selectedNode?.kind === "file"
-                        ? "No functions or classes were detected in this file yet. Try Search for business logic, ask DevLens to explain this file, or open a nearby source file."
-                        : "Select a file to see related functions, classes, and exports. DevLens can also help you find business logic or request flow."}
-                    </div>
-                  )}
                 </div>
               </div>
             </div>
@@ -4022,13 +4722,12 @@ export default function Home() {
               summary={docsSummary}
               isLoading={isLoadingDocsSummary}
               error={docsSummaryError}
-              onInspectSymbol={inspectSymbol}
               onOpenInFiles={openSymbolInFiles}
             />
           ) : null}
         </section>
 
-        <aside className="flex min-h-0 flex-col border-l border-line bg-white p-4">
+        <aside className="flex min-h-[520px] flex-col border-t border-line bg-white p-4 xl:min-h-0 xl:border-l xl:border-t-0">
           <div className="flex items-center justify-between gap-3">
             <div>
               <p className="font-semibold">DevLens AI</p>
@@ -4058,7 +4757,8 @@ export default function Home() {
               <button
                 key={prompt}
                 type="button"
-                onClick={() => askDevlens(prompt)}
+                onClick={() => void askDevlens(prompt)}
+                disabled={isAskingDevlens}
                 className="rounded-full border border-line bg-white px-3 py-1.5 text-left text-xs font-medium text-graphite transition-colors hover:border-signal hover:bg-cloud hover:text-ink"
               >
                 {prompt}
@@ -4076,18 +4776,25 @@ export default function Home() {
               </div>
               <div className="min-w-0 rounded-md bg-white p-3 shadow-sm">
                 <p className="text-sm leading-6 text-graphite">
-                  {devlensAnswer ??
+                  {isAskingDevlens ? (
+                    <span className="inline-flex items-center gap-2">
+                      <Loader2 size={14} className="animate-spin text-signal" />
+                      Gathering file-backed context
+                    </span>
+                  ) : (
+                    devlensResponse?.answer ??
                     (repositoryReady
                       ? "Choose a question above. DevLens will use the Repository Guide, file tree, and code signals already available in this workspace."
-                      : "Analyze a repository first, then DevLens can guide you through where to start and what to inspect.")}
+                      : "Analyze a repository first, then DevLens can guide you through where to start and what to inspect.")
+                  )}
                 </p>
-                {devlensSources.length ? (
+                {devlensResponse?.citations.length ? (
                   <div className="mt-3 border-t border-line pt-3">
                     <p className="text-xs font-semibold uppercase tracking-wide text-graphite">
-                      Sources
+                      Citations
                     </p>
                     <div className="mt-2 grid gap-1.5">
-                      {devlensSources.map((source) => (
+                      {devlensResponse.citations.map((source) => (
                         <button
                           key={`${source.path}-${source.startLine ?? "file"}`}
                           type="button"
@@ -4104,11 +4811,11 @@ export default function Home() {
                             setActiveWorkspaceTab("files");
                           }}
                           className="flex min-w-0 items-center gap-2 rounded bg-cloud px-2 py-1 text-left text-xs font-medium text-graphite transition-colors hover:bg-signal/10 hover:text-ink"
-                          title={source.path}
+                          title={`${source.path} - ${source.reason}`}
                         >
                           <FileCode2 size={12} className="shrink-0 text-signal" />
                           <span className="min-w-0 flex-1 truncate">
-                            {source.path}
+                            {source.label}
                           </span>
                           {source.startLine && source.endLine ? (
                             <span className="shrink-0 text-[11px]">
@@ -4128,7 +4835,8 @@ export default function Home() {
                     <button
                       key={followUp}
                       type="button"
-                      onClick={() => askDevlens(followUp)}
+                      onClick={() => void askDevlens(followUp)}
+                      disabled={isAskingDevlens}
                       className="rounded-full border border-line px-2 py-1 text-xs text-graphite hover:border-signal hover:text-ink"
                     >
                       {followUp}
@@ -4154,15 +4862,15 @@ export default function Home() {
               />
               <div className="mt-2 flex items-center justify-between">
                 <span className="text-xs text-graphite">
-                  Grounded answers are next
+                  Uses indexed files and source lines
                 </span>
                 <button
                   type="button"
-                  onClick={() => askDevlens(devlensPrompt)}
-                  disabled={!devlensPrompt.trim()}
+                  onClick={() => void askDevlens(devlensPrompt)}
+                  disabled={!devlensPrompt.trim() || isAskingDevlens}
                   className="rounded-md bg-ink px-3 py-1.5 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  Ask
+                  {isAskingDevlens ? "Reading" : "Ask"}
                 </button>
               </div>
             </div>
