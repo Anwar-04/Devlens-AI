@@ -147,6 +147,18 @@ type DevlensResponse = {
   citations: DevlensCitation[];
 };
 
+type GuidedInvestigation = {
+  status: string;
+  bestNextFile: DevlensCitation | null;
+  whyItMatters: string;
+  connections: string[];
+  inspectAfter: DevlensCitation[];
+  findings: string[];
+  risks: string[];
+  followUps: string[];
+  summary: string;
+};
+
 type SymbolRelation = {
   referenceId: string;
   referenceKind: "REFERENCE" | "CALL";
@@ -536,17 +548,32 @@ function estimateOnboarding(summary: DocsSummaryResponse | null): string {
 function getPathReason(path: string): string {
   const normalized = path.toLowerCase();
 
-  if (normalized.endsWith("readme.md")) return "understand purpose and public usage";
-  if (normalized.endsWith("package.json")) return "review scripts, dependencies, and package entry points";
+  if (normalized.endsWith("readme.md")) return "confirm the product promise, setup path, and public usage";
+  if (normalized.endsWith("package.json")) return "review scripts, dependencies, and runtime entry points";
   if (normalized.includes("/test") || normalized.includes(".test.") || normalized.includes(".spec.")) {
-    return "learn expected behavior from tests";
+    return "learn expected behavior from executable examples";
   }
   if (normalized.endsWith("index.ts") || normalized.endsWith("index.js")) {
-    return "inspect the main exports and entry point";
+    return "inspect main exports and bootstrapping flow";
   }
-  if (normalized.includes("config")) return "understand runtime and build configuration";
-  if (normalized.includes("app/") || normalized.includes("src/")) return "inspect core implementation";
+  if (normalized.includes("config")) return "understand runtime, build, or integration settings";
+  if (normalized.includes("controller") || normalized.includes("route")) return "trace how requests enter the application";
+  if (normalized.includes("service")) return "inspect the business behavior behind request handlers";
+  if (normalized.includes("model") || normalized.includes("schema") || normalized.includes("db")) {
+    return "understand the data shape and persistence boundary";
+  }
+  if (normalized.includes("app/") || normalized.includes("src/")) return "inspect the core implementation path";
   return "high-signal file from the analysis";
+}
+
+function getBusinessPurpose(summary: DocsSummaryResponse): string {
+  const purpose = summary.understanding.purpose || summary.overview.text;
+  const features = summary.understanding.coreFeatures.slice(0, 3);
+  const featureText = features.length
+    ? ` The main user-facing capabilities appear to be ${features.join(", ")}.`
+    : "";
+
+  return `${purpose}${featureText}`;
 }
 
 function isLikelyEntryPoint(path: string): boolean {
@@ -609,7 +636,7 @@ function buildSeniorRepoExplanation(summary: DocsSummaryResponse | null): string
       }, so new contributors can learn expected behavior from examples.`
     : "Testing signals are light, so new contributors should rely on the README, entry points, and source flow first.";
 
-  return `${summary.overview.text} In practical terms, this looks like a ${inferComplexity(
+  return `${getBusinessPurpose(summary)} In practical terms, this looks like a ${inferComplexity(
     summary,
   ).toLowerCase()} ${inferProjectType(summary).toLowerCase()} built around ${languages}${
     frameworks ? ` with ${frameworks}` : ""
@@ -672,22 +699,97 @@ function buildFileMatterSummary(path: string, symbols: RepositorySymbol[]) {
   const role = getFileRoleLabel(path);
   const importantSymbols = symbols.slice(0, 3).map((symbol) => symbol.name);
   const normalized = path.toLowerCase();
+  const relatedFileCount = buildRelatedFileCandidates(path, symbols).length;
   const suggestedNext = normalized.endsWith("readme.md")
     ? "package.json"
     : normalized.endsWith("package.json")
       ? "README.md or the main source entry point"
       : normalized.includes(".test.") || normalized.includes(".spec.")
         ? "the source file covered by this test"
-        : "README.md or nearby test files";
+        : role === "Controller" || role === "Route"
+          ? "the service, middleware, or validator that handles the request"
+          : role === "Service"
+            ? "the controller that calls it, then the data layer it depends on"
+            : role === "Database" || role === "Model"
+              ? "the service or route that reads and writes this data"
+              : "the next file in the Repository Guide reading order";
 
   return {
     role,
     purpose: `${path} ${getFileRolePurpose(role)}`,
     whyRead: importantSymbols.length
       ? `It contains ${importantSymbols.join(", ")}, which makes it a useful anchor for understanding behavior in this part of the repository.`
-      : "It is a good place to inspect source flow, naming, and local implementation patterns.",
+      : relatedFileCount
+        ? `It connects to ${relatedFileCount} nearby file${relatedFileCount === 1 ? "" : "s"}, so it can help trace the local implementation path.`
+        : "It is a good place to inspect source flow, naming, and local implementation patterns.",
     suggestedNext,
   };
+}
+
+function getReadingOrderMatch(
+  summary: DocsSummaryResponse | null,
+  path: string,
+): { file: string; reason: string } | null {
+  return (
+    summary?.understanding.readingOrder.find(
+      (item) => item.file.toLowerCase() === path.toLowerCase(),
+    ) ?? null
+  );
+}
+
+function getNextReadingOrderItem(
+  summary: DocsSummaryResponse | null,
+  path: string,
+): { file: string; reason: string } | null {
+  const readingOrder = summary?.understanding.readingOrder ?? [];
+  const currentIndex = readingOrder.findIndex(
+    (item) => item.file.toLowerCase() === path.toLowerCase(),
+  );
+
+  if (currentIndex >= 0) return readingOrder[currentIndex + 1] ?? null;
+  return readingOrder[0] ?? null;
+}
+
+function buildSuggestedFileItems(
+  selectedPath: string,
+  relatedFiles: string[],
+  fileMatter: ReturnType<typeof buildFileMatterSummary> | null,
+  summary: DocsSummaryResponse | null,
+) {
+  const nextReadingItem = getNextReadingOrderItem(summary, selectedPath);
+  const items = [
+    ...(nextReadingItem
+      ? [
+          {
+            path: nextReadingItem.file,
+            reason: `Next in the Repository Guide: ${nextReadingItem.reason}`,
+          },
+        ]
+      : []),
+    ...relatedFiles.map((path) => ({
+      path,
+      reason: getPathReason(path),
+    })),
+    ...(fileMatter?.suggestedNext && !fileMatter.suggestedNext.includes(" or ")
+      ? [
+          {
+            path: fileMatter.suggestedNext,
+            reason: "Suggested by the selected file role.",
+          },
+        ]
+      : []),
+  ];
+  const seen = new Set<string>();
+
+  return items
+    .filter((item) => item.path && item.path !== selectedPath)
+    .filter((item) => {
+      const key = item.path.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, 5);
 }
 
 function splitIdentifierLabel(value: string): string {
@@ -875,6 +977,186 @@ function buildSymbolCitation(
   };
 }
 
+function formatCitationPath(citation: DevlensCitation): string {
+  return citation.startLine && citation.endLine
+    ? `${citation.path} (${formatCompactLineRange({
+        startLine: citation.startLine,
+        endLine: citation.endLine,
+      })})`
+    : citation.path;
+}
+
+function buildReadingOrderCitations(
+  summary: DocsSummaryResponse,
+): DevlensCitation[] {
+  return summary.understanding.readingOrder.slice(0, 5).map((item) =>
+    buildPathCitation(
+      item.file,
+      item.reason || getPathReason(item.file),
+    ),
+  );
+}
+
+function buildSearchTrail(results: SearchResult[]): string {
+  return results
+    .slice(0, 4)
+    .map((result, index) => `${index + 1}. ${result.path} (${formatCompactLineRange(result)})`)
+    .join(" ");
+}
+
+function getCitationPath(path: string, citations: DevlensCitation[]) {
+  return citations.find((citation) => citation.path === path);
+}
+
+function buildSelectedFileCitation(
+  selectedNode: ExplorerNode | null,
+  source: FileSourceResponse | null,
+): DevlensCitation | null {
+  if (selectedNode?.kind !== "file") return null;
+
+  return {
+    path: selectedNode.path,
+    label: selectedNode.path,
+    reason: `${getFileRoleLabel(selectedNode.path)} file currently selected in Files.`,
+    startLine: source?.file.previewStartLine ?? undefined,
+    endLine: source?.file.previewEndLine ?? undefined,
+  };
+}
+
+function buildInvestigationRisks(summary: DocsSummaryResponse): string[] {
+  const risks: string[] = [];
+
+  if (!summary.architecture.testFileCount) {
+    risks.push("No test files were detected; verify behavior through request flow, examples, and important source paths.");
+  }
+  if (summary.architecture.generatedFileCount) {
+    risks.push(`${summary.architecture.generatedFileCount} generated file${summary.architecture.generatedFileCount === 1 ? "" : "s"} may add noise; prioritize hand-written implementation files.`);
+  }
+  if (!summary.repository.detectedFrameworks.length) {
+    risks.push("No framework signal was detected; confirm the real boot file before assuming request or app flow.");
+  }
+  if (!summary.understanding.readingOrder.length) {
+    risks.push("The reading order is sparse; use important files and search results as the onboarding trail.");
+  }
+
+  return risks.slice(0, 3);
+}
+
+function buildConnectionLabels(
+  selectedNode: ExplorerNode | null,
+  symbols: RepositorySymbol[],
+  summary: DocsSummaryResponse,
+) {
+  const labels = new Set<string>();
+
+  if (selectedNode?.kind === "file") {
+    symbols.slice(0, 3).forEach((symbol) =>
+      labels.add(`${symbol.name} (${getSymbolKindMeta(symbol.kind).singular})`),
+    );
+    buildRelatedFileCandidates(selectedNode.path, symbols)
+      .slice(0, 2)
+      .forEach((path) => labels.add(path));
+  }
+
+  if (!labels.size) {
+    summary.symbols.mostConnected
+      .slice(0, 3)
+      .forEach((symbol) => labels.add(`${symbol.name} in ${symbol.filePath}`));
+  }
+
+  return [...labels].slice(0, 5);
+}
+
+function buildGuidedInvestigation({
+  summary,
+  selectedNode,
+  selectedFileSource,
+  selectedFileSymbols,
+  inspectedFilePaths,
+}: {
+  summary: DocsSummaryResponse | null;
+  selectedNode: ExplorerNode | null;
+  selectedFileSource: FileSourceResponse | null;
+  selectedFileSymbols: RepositorySymbol[];
+  inspectedFilePaths: string[];
+}): GuidedInvestigation | null {
+  if (!summary) return null;
+
+  const readingOrder = buildReadingOrderCitations(summary);
+  const startHere = buildStartHereItems(summary).map((item) =>
+    buildPathCitation(item.path, item.reason),
+  );
+  const selectedCitation = buildSelectedFileCitation(selectedNode, selectedFileSource);
+  const inspected = new Set(inspectedFilePaths);
+  const nextFromReadingOrder =
+    readingOrder.find((citation) => !inspected.has(citation.path)) ??
+    startHere.find((citation) => !inspected.has(citation.path)) ??
+    readingOrder[0] ??
+    startHere[0] ??
+    null;
+  const bestNextFile = nextFromReadingOrder ?? selectedCitation;
+  const selectedRole =
+    selectedNode?.kind === "file" ? getFileRoleLabel(selectedNode.path) : null;
+  const selectedMatter =
+    selectedNode?.kind === "file"
+      ? buildFileMatterSummary(selectedNode.path, selectedFileSymbols)
+      : null;
+  const inspectAfter = dedupeCitations([
+    ...(selectedCitation ? [selectedCitation] : []),
+    ...(selectedNode?.kind === "file"
+      ? buildRelatedFileCandidates(selectedNode.path, selectedFileSymbols)
+          .map((path) => getCitationPath(path, readingOrder) ?? buildPathCitation(path))
+      : []),
+    ...readingOrder,
+    ...summary.symbols.mostConnected.slice(0, 2).map(buildSymbolCitation),
+  ])
+    .filter((citation) => citation.path !== bestNextFile?.path)
+    .slice(0, 3);
+
+  const findings = [
+    getBusinessPurpose(summary),
+    `${summary.repository.name} is currently identified as ${inferProjectType(summary)}.`,
+    summary.architecture.testFileCount
+      ? `${summary.architecture.testFileCount} test file${summary.architecture.testFileCount === 1 ? "" : "s"} can help confirm expected behavior.`
+      : "Testing signals are light in the indexed files.",
+  ].slice(0, 3);
+  const risks = buildInvestigationRisks(summary);
+  const connections = buildConnectionLabels(selectedNode, selectedFileSymbols, summary);
+  const bestFileLabel = bestNextFile?.path ?? "the Repository Guide";
+
+  return {
+    status: selectedNode?.kind === "file"
+      ? `${selectedNode.name} is selected; continue with the Guide's next recommended file.`
+      : "Start with the recommended reading order from the Repository Guide.",
+    bestNextFile,
+    whyItMatters: selectedMatter
+      ? bestNextFile?.path === selectedNode?.path
+        ? `${selectedMatter.purpose} ${selectedMatter.whyRead}`
+        : `${bestNextFile?.reason ?? selectedMatter.suggestedNext} This keeps the investigation aligned with the Guide before diving deeper from the selected file.`
+      : bestNextFile
+        ? bestNextFile.reason
+        : "Use the Guide and Search to choose the first source anchor.",
+    connections,
+    inspectAfter,
+    findings,
+    risks,
+    followUps: selectedNode?.kind === "file"
+      ? [
+          "Explain selected file",
+          "What should I inspect next?",
+          `Search ${selectedNode.name.replace(/\.[^.]+$/, "")}`,
+        ]
+      : [
+          "Where should I start?",
+          "What are the most important files?",
+          "Show request flow",
+        ],
+    summary: inspectedFilePaths.length
+      ? `Inspected ${inspectedFilePaths.length} file${inspectedFilePaths.length === 1 ? "" : "s"}. Next recommended anchor: ${bestFileLabel}.`
+      : `No files opened from guidance yet. Start with ${bestFileLabel}.`,
+  };
+}
+
 type TechnicalOverviewItem = {
   icon: typeof Workflow;
   label: string;
@@ -981,7 +1263,7 @@ function buildTechnicalOverviewItems(
       icon: Braces,
       label: "Complexity",
       value: inferComplexity(summary),
-      description: "Based on file count and parser-backed symbols.",
+      description: "Based on file count and indexed code signals.",
     },
     {
       icon: GitPullRequest,
@@ -1113,20 +1395,28 @@ function buildCoreComponents(summary: DocsSummaryResponse): CoreComponent[] {
 
 function getSearchResultType(result: SearchResult): string {
   const path = result.path.toLowerCase();
-  if (result.symbol?.kind) return result.symbol.kind.toLowerCase();
+  if (result.symbol?.kind) return getSymbolKindMeta(result.symbol.kind).singular;
   if (result.isTest || path.includes(".test.") || path.includes(".spec.")) return "test";
-  if (path.endsWith("package.json") || path.includes("config")) return "config";
-  if (result.chunkKind === "SYMBOL") return "symbol";
+  if (path.endsWith("package.json")) return "package";
+  if (path.includes("config")) return "config";
+  if (path.includes("route") || path.includes("router")) return "route";
+  if (path.includes("controller")) return "controller";
+  if (path.includes("service")) return "service";
+  if (path.includes("model") || path.includes("schema") || path.includes("db")) return "data";
+  if (result.chunkKind === "SYMBOL") return "code";
   return "file";
 }
 
 function getSearchResultPurpose(result: SearchResult): string {
+  const role = getFileRoleLabel(result.path);
   if (result.symbol) {
     return `${result.symbol.name} is a ${getSymbolKindMeta(
       result.symbol.kind,
-    ).singular} in ${result.path}.`;
+    ).singular} in a ${role.toLowerCase()} file. Open the cited lines to see how this match participates in the surrounding flow.`;
   }
-  return `${result.path} helps developers ${getPathReason(result.path)}.`;
+  return `${result.path} is a ${role.toLowerCase()} file that helps developers ${getPathReason(
+    result.path,
+  )}. Open the cited lines before following related files.`;
 }
 
 function getFileIconMeta(path: string, kind: ExplorerNode["kind"]) {
@@ -1158,11 +1448,21 @@ function getFileIconMeta(path: string, kind: ExplorerNode["kind"]) {
 }
 
 function describeRepositoryArchitecture(summary: DocsSummaryResponse): string {
+  const modules = summary.understanding.mainModules
+    .slice(0, 3)
+    .map((module) => module.name);
+  const moduleText = modules.length
+    ? ` Main anchors: ${modules.join(", ")}.`
+    : "";
+  if (summary.understanding.architecture) {
+    return `${summary.understanding.architecture}${moduleText}`;
+  }
+
   const type = inferProjectType(summary);
-  if (type === "Frontend app") return "UI-focused application with source files organized around screens or components.";
-  if (type === "API backend") return "Backend service with request handling, application logic, and supporting infrastructure.";
-  if (type === "CLI tool") return "Command-line project with a small operational surface and direct entry points.";
-  return "Straightforward repository structure with a direct path from entry files into implementation.";
+  if (type === "Frontend app") return `UI-focused application with source files organized around screens or components.${moduleText}`;
+  if (type === "API backend") return `Backend service with request handling, application logic, and supporting infrastructure.${moduleText}`;
+  if (type === "CLI tool") return `Command-line project with a small operational surface and direct entry points.${moduleText}`;
+  return `Straightforward repository structure with a direct path from entry files into implementation.${moduleText}`;
 }
 
 function getSymbolPurpose(symbol: RepositorySymbol | DocsSummarySymbol): string {
@@ -1702,8 +2002,14 @@ function FileSourcePreview({
     ? buildFileFlow(selectedNode.path, role)
     : [];
   const suggestedFiles = selectedNode?.kind === "file"
-    ? [...new Set([...relatedFiles, fileMatter?.suggestedNext].filter(Boolean) as string[])].slice(0, 5)
-    : buildStartHereItems(summary).map((item) => item.path).slice(0, 4);
+    ? buildSuggestedFileItems(selectedNode.path, relatedFiles, fileMatter, summary)
+    : buildStartHereItems(summary).map((item) => ({
+        path: item.path,
+        reason: item.reason,
+      })).slice(0, 4);
+  const readingOrderMatch = selectedNode?.kind === "file"
+    ? getReadingOrderMatch(summary, selectedNode.path)
+    : null;
   const normalizedFileSearch = fileSearchQuery.trim().toLowerCase();
   const fileSearchMatchCount = normalizedFileSearch
     ? source?.file.previewLines.filter((line) =>
@@ -1744,15 +2050,15 @@ function FileSourcePreview({
           </p>
           {suggestedFiles.length ? (
             <div className="mt-5 grid gap-2 text-left">
-              {suggestedFiles.map((path) => (
+              {suggestedFiles.map((item) => (
                 <button
-                  key={path}
+                  key={item.path}
                   type="button"
-                  onClick={() => onOpenPath(path)}
+                  onClick={() => onOpenPath(item.path)}
                   className="flex min-w-0 items-center gap-2 rounded-md border border-line bg-cloud px-3 py-2 text-sm font-medium text-graphite transition-colors hover:border-signal hover:bg-white hover:text-ink"
                 >
                   <FileCode2 size={14} className="shrink-0 text-signal" />
-                  <span className="truncate">{path}</span>
+                  <span className="truncate">{item.path}</span>
                 </button>
               ))}
             </div>
@@ -1872,6 +2178,9 @@ function FileSourcePreview({
               </p>
               <p className="mt-2 text-sm leading-6 text-graphite">
                 {fileMatter.whyRead}
+                {readingOrderMatch
+                  ? ` It appears in the Repository Guide because ${readingOrderMatch.reason}.`
+                  : ""}
               </p>
             </div>
             <div className="rounded-md border border-line bg-white p-4">
@@ -2060,20 +2369,20 @@ function FileSourcePreview({
           <div className="rounded-md border border-line bg-white p-4">
             <p className="text-sm font-semibold text-ink">Suggested Next Files</p>
             <div className="mt-3 grid gap-2">
-              {suggestedFiles.length ? suggestedFiles.map((path, index) => (
+              {suggestedFiles.length ? suggestedFiles.map((item, index) => (
                 <button
-                  key={`${path}-${index}`}
+                  key={`${item.path}-${index}`}
                   type="button"
-                  onClick={() => onOpenPath(path)}
+                  onClick={() => onOpenPath(item.path)}
                   className="grid grid-cols-[24px_minmax(0,1fr)] gap-2 rounded-md bg-cloud px-3 py-2 text-left text-sm hover:bg-signal/10"
                 >
                   <span className="grid h-6 w-6 place-items-center rounded bg-white text-xs font-semibold text-signal">
                     {index + 1}
                   </span>
                   <span className="min-w-0">
-                    <span className="block truncate font-medium text-ink">{path}</span>
+                    <span className="block truncate font-medium text-ink">{item.path}</span>
                     <span className="block truncate text-xs text-graphite">
-                      {getPathReason(path)}
+                      {item.reason}
                     </span>
                   </span>
                 </button>
@@ -2496,7 +2805,7 @@ function SymbolGraphCanvas({
           viewBox="0 0 100 100"
           preserveAspectRatio="none"
           role="img"
-          aria-label="Symbol relationship graph"
+          aria-label="Symbol relationships"
         >
           <defs>
             {(["calls", "references", "inbound"] as const).map((relation) => {
@@ -2592,7 +2901,7 @@ function SymbolGraphPanel({
       <div className="border-b border-line px-4 py-3">
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0">
-            <p className="font-semibold">Symbol graph</p>
+            <p className="font-semibold">Symbol relationships</p>
             <p className="text-sm text-graphite">
               {symbolsResponse?.count
                 ? `${symbolsResponse.count} symbols available for relationship mapping.`
@@ -2610,8 +2919,8 @@ function SymbolGraphPanel({
               <Network className="mx-auto mb-3 text-signal" />
               <p className="font-semibold">Analyze a repository first</p>
               <p className="mt-2 max-w-md text-sm leading-6 text-graphite">
-                The graph uses extracted symbols and relationships from a
-                completed analysis.
+                Symbol relationships appear after DevLens finishes analyzing
+                the repository.
               </p>
             </div>
           </div>
@@ -2619,7 +2928,7 @@ function SymbolGraphPanel({
           <div className="grid h-full place-items-center rounded-md border border-line bg-white p-6 text-center">
             <div>
               <Braces className="mx-auto mb-3 text-signal" />
-              <p className="font-semibold">No symbol graph available</p>
+              <p className="font-semibold">No symbol relationships available</p>
               <p className="mt-2 max-w-md text-sm leading-6 text-graphite">
                 No code signals were detected for this repository.
               </p>
@@ -2642,7 +2951,7 @@ function SymbolGraphPanel({
                   </p>
                   <p className="mt-2 max-w-md text-sm leading-6 text-graphite">
                     DevLens indexed this symbol, but it does not currently have
-                    calls, references, or inbound links in the graph data.
+                    calls, references, or inbound links in the current analysis.
                   </p>
                 </div>
               </div>
@@ -2674,7 +2983,7 @@ function SymbolGraphPanel({
               <div className="rounded-md border border-line bg-white p-4 shadow-sm">
                 <p className="text-sm font-semibold text-ink">Actions</p>
                 <p className="mt-1 text-sm leading-6 text-graphite">
-                  Keep exploring in the graph, inspect relationships in
+                  Keep exploring related code, inspect relationships in
                   Symbols, or jump to the file.
                 </p>
                 <div className="mt-3 grid gap-2">
@@ -2794,7 +3103,7 @@ function RepoBriefPanel({
                     {summary.repository.owner}/{summary.repository.name}
                   </h2>
                   <p className="mt-3 max-w-4xl text-base leading-7 text-ink">
-                    {summary.understanding.summary}
+                    {buildSeniorRepoExplanation(summary)}
                   </p>
                 </div>
                 <span
@@ -2814,7 +3123,7 @@ function RepoBriefPanel({
                     What this project appears to do
                   </p>
                   <p className="mt-2 text-sm leading-6 text-graphite">
-                    {summary.understanding.purpose}
+                    {getBusinessPurpose(summary)}
                   </p>
                   <div className="mt-4 grid gap-3 md:grid-cols-2">
                     <div>
@@ -2830,7 +3139,7 @@ function RepoBriefPanel({
                         Architecture
                       </p>
                       <p className="mt-1 text-sm leading-6 text-ink">
-                        {summary.understanding.architecture}
+                        {describeRepositoryArchitecture(summary)}
                       </p>
                     </div>
                   </div>
@@ -2853,7 +3162,7 @@ function RepoBriefPanel({
                           <p className="truncate font-medium text-ink">
                             {item.file}
                           </p>
-                          <p className="truncate text-xs text-graphite">
+                          <p className="line-clamp-2 text-xs leading-5 text-graphite">
                             {item.reason}
                           </p>
                         </div>
@@ -3112,6 +3421,7 @@ export default function Home() {
   const [devlensResponse, setDevlensResponse] =
     useState<DevlensResponse | null>(null);
   const [isAskingDevlens, setIsAskingDevlens] = useState(false);
+  const [inspectedFilePaths, setInspectedFilePaths] = useState<string[]>([]);
   const [sidebarCopiedPath, setSidebarCopiedPath] = useState<string | null>(null);
 
   const repository = job?.repository;
@@ -3208,6 +3518,23 @@ export default function Home() {
             description:
               "No indexed symbols currently point back to this symbol.",
           };
+  const guidedInvestigation = useMemo(
+    () =>
+      buildGuidedInvestigation({
+        summary: docsSummary,
+        selectedNode,
+        selectedFileSource,
+        selectedFileSymbols,
+        inspectedFilePaths,
+      }),
+    [
+      docsSummary,
+      inspectedFilePaths,
+      selectedFileSource,
+      selectedFileSymbols,
+      selectedNode,
+    ],
+  );
 
   useEffect(() => {
     if (explorerTree.length) {
@@ -3484,6 +3811,7 @@ export default function Home() {
     setActiveSymbolTab("references");
     setDevlensResponse(null);
     setIsAskingDevlens(false);
+    setInspectedFilePaths([]);
     setIsSubmitting(true);
 
     try {
@@ -3580,6 +3908,11 @@ export default function Home() {
     symbol: { filePath: string },
     lineRange?: { startLine: number; endLine: number },
   ) {
+    setInspectedFilePaths((current) =>
+      current.includes(symbol.filePath)
+        ? current
+        : [symbol.filePath, ...current].slice(0, 8),
+    );
     setFileQuery("");
     setLanguageFilter("all");
     setHighlightedLineRange(lineRange ?? null);
@@ -3635,6 +3968,19 @@ export default function Home() {
     setActiveWorkspaceTab("files");
   }
 
+  function openCitationInFiles(source: DevlensCitation) {
+    focusSymbolFile(
+      { filePath: source.path },
+      source.startLine && source.endLine
+        ? {
+            startLine: source.startLine,
+            endLine: source.endLine,
+          }
+        : undefined,
+    );
+    setActiveWorkspaceTab("files");
+  }
+
   function explainSelectedFile() {
     if (selectedNode?.kind !== "file") return;
     void askDevlens(`Explain ${selectedNode.path} and how it fits into this repository.`);
@@ -3687,21 +4033,36 @@ export default function Home() {
     const keyFiles = buildKeyFileItems(docsSummary);
     const codeSignals = docsSummary.symbols.mostConnected.slice(0, 3);
     const searchHits = assistantSearch?.results ?? [];
+    const readingOrder = buildReadingOrderCitations(docsSummary);
+    const selectedFileCitation =
+      selectedNode?.kind === "file"
+        ? {
+            path: selectedNode.path,
+            label: selectedNode.path,
+            reason: `${getFileRoleLabel(selectedNode.path)} file currently selected in the workspace.`,
+            startLine: selectedFileSource?.file.previewStartLine ?? undefined,
+            endLine: selectedFileSource?.file.previewEndLine ?? undefined,
+          }
+        : null;
+    const selectedFileRole =
+      selectedNode?.kind === "file" ? getFileRoleLabel(selectedNode.path) : null;
 
-    if (/start/i.test(prompt)) {
+    if (/start|onboard|first/i.test(prompt)) {
+      const citations = readingOrder.length
+        ? readingOrder
+        : startHere.slice(0, 4).map((item) => buildPathCitation(item.path, item.reason));
       return {
-        answer: startHere.length
-          ? `Start with ${startHere
+        answer: citations.length
+          ? `Start with ${citations
+              .slice(0, 4)
               .map((item, index) => `${index + 1}. ${item.path} (${item.reason})`)
-              .join(" ")}. This path gives you purpose, entry points, and expected behavior before you dive deeper.`
+              .join(" ")}. This follows the Repository Guide reading order so the purpose, entry points, and implementation anchors stay connected.`
           : "Start with the README, package metadata, and the first source entry point you find in the file tree.",
-        citations: startHere
-          .slice(0, 4)
-          .map((item) => buildPathCitation(item.path, item.reason)),
+        citations: citations.slice(0, 4),
       };
     }
 
-    if (/important files/i.test(prompt) || /business logic/i.test(prompt)) {
+    if (/important files|business logic|where.*logic|core logic/i.test(prompt)) {
       const citations = searchHits.length
         ? searchHits.slice(0, 4).map(buildSearchCitation)
         : keyFiles
@@ -3710,28 +4071,24 @@ export default function Home() {
 
       return {
         answer: searchHits.length
-          ? `The strongest current matches are ${searchHits
-              .slice(0, 4)
-              .map((result) => `${result.path} (${formatCompactLineRange(result)})`)
-              .join("; ")}. Open the citations to inspect the exact source lines.`
+          ? `The strongest current matches are ${buildSearchTrail(searchHits)} Open the citations to inspect the exact source lines before following adjacent handlers, services, or data modules.`
           : keyFiles.length
             ? `The most useful files to inspect are ${keyFiles
                 .map((item) => `${item.path} (${item.reason})`)
-                .join("; ")}. Open the citations to read the indexed source preview.`
+                .join("; ")}. Open the citations to read the indexed source preview, then compare those files with the Repository Guide reading order.`
             : "DevLens has not identified key files yet, but the file tree and search can still help you find entry points.",
         citations,
       };
     }
 
-    if (/routing|request flow/i.test(prompt)) {
+    if (/routing|request flow|trace.*flow|how.*request/i.test(prompt)) {
       return {
         answer: searchHits.length
           ? `This looks like a ${inferProjectType(
               docsSummary,
-            )}. The current route-flow matches point to ${searchHits
-              .slice(0, 4)
-              .map((result) => `${result.path} (${formatCompactLineRange(result)})`)
-              .join("; ")}. Follow those citations first, then inspect nearby handlers or middleware.`
+            )}. The route-flow trail is ${buildSearchTrail(
+              searchHits,
+            )} Follow those citations first, then inspect nearby handlers, middleware, and services from the file view.`
           : `This looks like a ${inferProjectType(
               docsSummary,
             )}. Search for terms like route, handler, controller, middleware, and request to trace the flow through source files.`,
@@ -3739,22 +4096,21 @@ export default function Home() {
       };
     }
 
-    if (/authentication|database/i.test(prompt)) {
-      const term = /authentication/i.test(prompt)
+    if (/authentication|auth|database|data layer|persistence/i.test(prompt)) {
+      const term = /authentication|auth/i.test(prompt)
         ? "auth, session, token, middleware, login"
         : "database, prisma, model, repository, query";
       return {
         answer: searchHits.length
-          ? `DevLens found ${searchHits.length} matches for ${term}. Start with ${searchHits
-              .slice(0, 4)
-              .map((result) => `${result.path} (${formatCompactLineRange(result)})`)
-              .join("; ")} and use the citations to open the exact lines.`
+          ? `DevLens found ${searchHits.length} matches for ${term}. Start with ${buildSearchTrail(
+              searchHits,
+            )} and use the citations to open the exact lines.`
           : `I did not find a strong indexed match for ${term}. Try Search with a narrower project term, then DevLens can cite the matching source lines.`,
         citations: searchHits.slice(0, 4).map(buildSearchCitation),
       };
     }
 
-    if (/architecture/i.test(prompt)) {
+    if (/architecture|component|module|structured/i.test(prompt)) {
       return {
         answer: `${inferProjectType(docsSummary)} with ${
           docsSummary.repository.detectedFrameworks.join(", ") || "no major framework detected"
@@ -3762,15 +4118,15 @@ export default function Home() {
           docsSummary,
         ).toLowerCase()}, and the recommended onboarding time is ${estimateOnboarding(
           docsSummary,
-        )}. Start with the files in the Repository Guide, then inspect related code signals.`,
+        )}. The Repository Guide describes the architecture as: ${docsSummary.understanding.architecture} Start with the reading-order citations, then inspect related code signals.`,
         citations: dedupeCitations([
-          ...startHere.slice(0, 2).map((item) => buildPathCitation(item.path, item.reason)),
+          ...readingOrder.slice(0, 3),
           ...codeSignals.slice(0, 2).map(buildSymbolCitation),
         ]),
       };
     }
 
-    if (/selected file/i.test(prompt) || /explain .*fits into/i.test(prompt)) {
+    if (/selected file|current file|this file|explain .*fits into/i.test(prompt)) {
       if (selectedNode?.kind !== "file") {
         return {
           answer:
@@ -3782,6 +4138,8 @@ export default function Home() {
       const previewStart = selectedFileSource?.file.previewStartLine ?? undefined;
       const previewEnd = selectedFileSource?.file.previewEndLine ?? undefined;
       const fileMatter = buildFileMatterSummary(selectedNode.path, selectedFileSymbols);
+      const relatedCitations = selectedFileSymbols.slice(0, 3).map(buildSymbolCitation);
+      const relatedNames = relatedCitations.map(formatCitationPath).join("; ");
 
       return {
         answer: `${selectedNode.path} is selected. ${fileMatter.purpose} ${fileMatter.whyRead} ${
@@ -3791,6 +4149,10 @@ export default function Home() {
                 endLine: previewEnd,
               })}.`
             : "Open the source preview for line-level context."
+        }${
+          relatedNames
+            ? ` Follow the related code signals next: ${relatedNames}.`
+            : ` Use ${fileMatter.suggestedNext} as the next recommended step.`
         }`,
         citations: dedupeCitations([
           {
@@ -3800,20 +4162,39 @@ export default function Home() {
             startLine: previewStart,
             endLine: previewEnd,
           },
-          ...selectedFileSymbols.slice(0, 3).map(buildSymbolCitation),
+          ...relatedCitations,
         ]),
       };
     }
 
-    if (/structured|repository/i.test(prompt)) {
+    if (/next|follow.?up|inspect next|what now/i.test(prompt)) {
+      const citations = dedupeCitations([
+        ...(selectedFileCitation ? [selectedFileCitation] : []),
+        ...selectedFileSymbols.slice(0, 3).map(buildSymbolCitation),
+        ...readingOrder.slice(0, 3),
+        ...searchHits.slice(0, 2).map(buildSearchCitation),
+      ]).slice(0, 5);
+
       return {
-        answer: `${docsSummary.overview.text} It appears to be a ${inferProjectType(
+        answer: selectedNode?.kind === "file"
+          ? `From ${selectedNode.path}, inspect the cited ${selectedFileRole?.toLowerCase()} context first, then follow any related symbols and compare that file against the repository reading order. This keeps the path grounded in source lines instead of guessing from filenames alone.`
+          : `Use the repository reading order as the next trail: ${readingOrder
+              .slice(0, 4)
+              .map((item, index) => `${index + 1}. ${item.path}`)
+              .join(" ")}. Open each citation in Files and follow related code signals from there.`,
+        citations,
+      };
+    }
+
+    if (/repository|explain/i.test(prompt)) {
+      return {
+        answer: `${docsSummary.understanding.summary} It appears to be a ${inferProjectType(
           docsSummary,
         )} with ${docsSummary.repository.fileCount} files, ${
           docsSummary.repository.detectedLanguages.join(", ") || "detected source"
-        }, and ${docsSummary.symbols.counts.total} code signals.`,
+        }, and ${docsSummary.symbols.counts.total} code signals. The guide's purpose is: ${docsSummary.understanding.purpose}`,
         citations: dedupeCitations([
-          ...startHere.slice(0, 3).map((item) => buildPathCitation(item.path, item.reason)),
+          ...readingOrder.slice(0, 3),
           ...codeSignals.slice(0, 2).map(buildSymbolCitation),
         ]),
       };
@@ -3838,17 +4219,22 @@ export default function Home() {
   }
 
   function getAssistantSearchQuery(prompt: string): string | null {
-    if (/routing|request flow/i.test(prompt)) {
+    if (/routing|request flow|trace.*flow|how.*request/i.test(prompt)) {
       return "route handler controller middleware request";
     }
-    if (/authentication/i.test(prompt)) {
+    if (/authentication|auth/i.test(prompt)) {
       return "auth session token middleware login";
     }
-    if (/database/i.test(prompt)) {
+    if (/database|data layer|persistence/i.test(prompt)) {
       return "database prisma model repository query";
     }
-    if (/business logic/i.test(prompt)) {
+    if (/business logic|where.*logic|core logic/i.test(prompt)) {
       return "service handler controller business logic";
+    }
+    if (/next|follow.?up|inspect next|what now/i.test(prompt)) {
+      return selectedNode?.kind === "file"
+        ? selectedNode.name.replace(/\.[^.]+$/, "")
+        : null;
     }
     return null;
   }
@@ -4749,6 +5135,7 @@ export default function Home() {
               "Where should I start?",
               "Explain this repository",
               "Explain selected file",
+              "What should I inspect next?",
               "What are the most important files?",
               "Show request flow",
               "Find authentication",
@@ -4765,6 +5152,175 @@ export default function Home() {
               </button>
             ))}
           </div>
+
+          {repositoryReady && guidedInvestigation ? (
+            <section className="mt-4 rounded-md border border-line bg-cloud p-3">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-graphite">
+                    Guided investigation
+                  </p>
+                  <p className="mt-1 text-sm font-semibold leading-5 text-ink">
+                    {guidedInvestigation.status}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void askDevlens("Where should I start?")}
+                  disabled={isAskingDevlens}
+                  className="shrink-0 rounded-md border border-line bg-white px-2 py-1 text-xs font-medium text-graphite hover:border-signal hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Start tour
+                </button>
+              </div>
+
+              {guidedInvestigation.bestNextFile ? (
+                <div className="mt-3 rounded-md border border-line bg-white p-3">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-graphite">
+                    Best next file
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => openCitationInFiles(guidedInvestigation.bestNextFile!)}
+                    className="mt-1 block max-w-full truncate text-left text-sm font-semibold text-ink hover:text-signal"
+                    title={guidedInvestigation.bestNextFile.path}
+                  >
+                    {guidedInvestigation.bestNextFile.path}
+                  </button>
+                  <p className="mt-2 line-clamp-3 text-xs leading-5 text-graphite">
+                    {guidedInvestigation.whyItMatters}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => openCitationInFiles(guidedInvestigation.bestNextFile!)}
+                    className="mt-3 inline-flex items-center gap-1.5 rounded-md bg-ink px-2 py-1 text-xs font-semibold text-white hover:bg-graphite"
+                  >
+                    <FileCode2 size={12} />
+                    Open evidence
+                  </button>
+                </div>
+              ) : null}
+
+              <div className="mt-3 grid gap-3">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-graphite">
+                    Important findings
+                  </p>
+                  <ul className="mt-2 grid gap-1.5 text-xs leading-5 text-graphite">
+                    {guidedInvestigation.findings.map((finding) => (
+                      <li key={finding} className="flex gap-2">
+                        <CheckCircle2 size={13} className="mt-0.5 shrink-0 text-mint" />
+                        <span className="line-clamp-2">{finding}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+
+                {guidedInvestigation.connections.length ? (
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-graphite">
+                      Connects to
+                    </p>
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {guidedInvestigation.connections.map((connection) => (
+                        <span
+                          key={connection}
+                          className="max-w-full truncate rounded bg-white px-2 py-1 text-xs font-medium text-graphite"
+                          title={connection}
+                        >
+                          {connection}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+
+                {guidedInvestigation.inspectAfter.length ? (
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-graphite">
+                      Inspect after this
+                    </p>
+                    <div className="mt-2 grid gap-1.5">
+                      {guidedInvestigation.inspectAfter.map((citation) => (
+                        <button
+                          key={`${citation.path}-${citation.startLine ?? "file"}`}
+                          type="button"
+                          onClick={() => openCitationInFiles(citation)}
+                          className="grid grid-cols-[minmax(0,1fr)_auto] gap-2 rounded bg-white px-2 py-1.5 text-left text-xs text-graphite hover:bg-signal/10 hover:text-ink"
+                          title={`${citation.path} - ${citation.reason}`}
+                        >
+                          <span className="min-w-0 truncate font-medium">
+                            {citation.path}
+                          </span>
+                          {citation.startLine && citation.endLine ? (
+                            <span className="shrink-0 text-[11px]">
+                              {formatCompactLineRange({
+                                startLine: citation.startLine,
+                                endLine: citation.endLine,
+                              })}
+                            </span>
+                          ) : null}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+
+                {guidedInvestigation.risks.length ? (
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-graphite">
+                      Risk signals
+                    </p>
+                    <ul className="mt-2 grid gap-1.5 text-xs leading-5 text-graphite">
+                      {guidedInvestigation.risks.map((risk) => (
+                        <li key={risk} className="flex gap-2">
+                          <AlertCircle size={13} className="mt-0.5 shrink-0 text-amber" />
+                          <span className="line-clamp-2">{risk}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+              </div>
+
+              <div className="mt-3 border-t border-line pt-3">
+                <p className="text-xs font-semibold uppercase tracking-wide text-graphite">
+                  Suggested follow-ups
+                </p>
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {guidedInvestigation.followUps.map((followUp) => (
+                    <button
+                      key={followUp}
+                      type="button"
+                      onClick={() => void askDevlens(followUp)}
+                      disabled={isAskingDevlens}
+                      className="rounded-full border border-line bg-white px-2 py-1 text-xs text-graphite hover:border-signal hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {followUp}
+                    </button>
+                  ))}
+                </div>
+                <p className="mt-2 text-xs leading-5 text-graphite">
+                  {guidedInvestigation.summary}
+                </p>
+                {inspectedFilePaths.length ? (
+                  <div className="mt-2 flex flex-wrap gap-1">
+                    {inspectedFilePaths.slice(0, 4).map((path) => (
+                      <button
+                        key={path}
+                        type="button"
+                        onClick={() => openPathInFiles(path)}
+                        className="max-w-full truncate rounded bg-white px-2 py-1 text-[11px] font-medium text-graphite hover:text-signal"
+                        title={path}
+                      >
+                        {path}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            </section>
+          ) : null}
 
           <div className="mt-4 min-h-0 flex-1 overflow-auto rounded-md bg-cloud/70 p-3">
             <div className="ml-auto max-w-[88%] rounded-md bg-ink px-3 py-2 text-sm leading-6 text-white">
@@ -4798,24 +5354,16 @@ export default function Home() {
                         <button
                           key={`${source.path}-${source.startLine ?? "file"}`}
                           type="button"
-                          onClick={() => {
-                            focusSymbolFile(
-                              { filePath: source.path },
-                              source.startLine && source.endLine
-                                ? {
-                                    startLine: source.startLine,
-                                    endLine: source.endLine,
-                                  }
-                                : undefined,
-                            );
-                            setActiveWorkspaceTab("files");
-                          }}
-                          className="flex min-w-0 items-center gap-2 rounded bg-cloud px-2 py-1 text-left text-xs font-medium text-graphite transition-colors hover:bg-signal/10 hover:text-ink"
+                          onClick={() => openCitationInFiles(source)}
+                          className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-2 rounded bg-cloud px-2 py-1.5 text-left text-xs font-medium text-graphite transition-colors hover:bg-signal/10 hover:text-ink"
                           title={`${source.path} - ${source.reason}`}
                         >
-                          <FileCode2 size={12} className="shrink-0 text-signal" />
-                          <span className="min-w-0 flex-1 truncate">
-                            {source.label}
+                          <FileCode2 size={12} className="mt-0.5 shrink-0 text-signal" />
+                          <span className="min-w-0">
+                            <span className="block truncate">{source.label}</span>
+                            <span className="mt-0.5 block line-clamp-2 font-normal leading-4 text-graphite">
+                              {source.reason}
+                            </span>
                           </span>
                           {source.startLine && source.endLine ? (
                             <span className="shrink-0 text-[11px]">

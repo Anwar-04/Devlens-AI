@@ -1,8 +1,10 @@
 # DevLens AI V1 Product Refinement
 
-DevLens AI V1 is a focused AI-powered developer workspace. A developer pastes a GitHub repository URL, DevLens analyzes the repo, shows the repository details, file structure, and search results, then provides one DevLens AI agent for file-backed questions.
+DevLens AI V1 is a focused AI-powered repository understanding and onboarding workspace. A developer pastes a GitHub repository URL, DevLens analyzes the repo, explains what the project does, shows important files, supports search, and provides one DevLens AI assistant for file-backed questions.
 
 The product should solve one problem exceptionally well: help developers understand unfamiliar GitHub repositories in minutes instead of days.
+
+DevLens AI V1 is not a large AI editor, multi-agent platform, documentation suite, graph dashboard, admin product, or autonomous coding agent. Those directions are explicitly out of scope for the visible V1 product.
 
 ## Product Vision
 
@@ -82,11 +84,11 @@ Search results should include:
 - Preview text.
 - Open source action.
 
-### DevLens AI Agent Panel
+### DevLens AI Assistant Panel
 
 V1 should expose one assistant: DevLens AI. The user should not choose between internal agents.
 
-The agent should automatically use repository metadata, Repo Brief data, symbols, search results, and source files. Every useful answer should include clickable citations.
+The assistant should automatically use repository metadata, Repo Brief data, symbols, search results, selected-file context, and source files. Every useful answer should include clickable citations.
 
 Example questions:
 
@@ -160,6 +162,14 @@ Settings should stay out of the main V1 workflow unless it contains real control
 
 ## Implementation Phases
 
+### Phase 0: Product Direction Lock
+
+- Preserve the frozen V1 layout: left repository status/file tree/filter, center Guide/Files/Search, right DevLens AI assistant.
+- Treat broad agent, documentation, graph, dashboard, admin, billing, and autonomous coding ideas as hidden or V2+ unless explicitly approved.
+- Do not delete useful backend capability just because it is hidden from V1.
+- Keep the visible product focused on repository understanding, file exploration, search, guided investigation, and cited answers.
+- Prefer deterministic, file-backed behavior first; add real AI only where it improves explanation quality and keeps citations/fallbacks.
+
 ### Phase 1: Simplify UI Shell
 
 - Remove or hide dashboard clutter.
@@ -182,7 +192,7 @@ Settings should stay out of the main V1 workflow unless it contains real control
 - Keep search results file-backed and clickable.
 - Show file, symbol, line, and preview context without exposing implementation details.
 
-### Phase 4: Add DevLens AI Agent MVP
+### Phase 4: Add DevLens AI Assistant MVP
 
 - Add one persistent DevLens AI chat panel.
 - Start with grounded, retrieval-backed behavior.
@@ -190,7 +200,15 @@ Settings should stay out of the main V1 workflow unless it contains real control
 - Let citations open files or symbols in the explorer.
 - Avoid exposing multiple agents or pipelines.
 
-### Phase 5: Optional Reintroductions
+### Phase 5: Guided Repository Investigation
+
+- Make the assistant feel active without pretending to be autonomous.
+- Add guided repository tour behavior inside the existing assistant panel.
+- Recommend the best next file, explain why it matters, show evidence, identify related files, and suggest what to inspect after it.
+- Track lightweight inspected-file history and investigation summary where it directly helps onboarding.
+- Surface risk or missing signals such as weak tests, missing docs, generated files, or unclear entry points.
+
+### Phase 6: Optional Reintroductions
 
 Only after the core experience is sharp, consider reintroducing:
 
@@ -224,4 +242,3 @@ If a feature does not directly help with those outcomes, it should be hidden or 
 - New database tables for generated docs.
 - AI/OpenAI calls before the deterministic and retrieval-backed experience is clear.
 - Exposing internal services such as embeddings, retrieval pipelines, or knowledge graph agents.
-

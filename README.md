@@ -2,13 +2,16 @@
 
 Understand any codebase in minutes, not days.
 
-DevLens AI is an AI-powered codebase intelligence platform that analyzes GitHub repositories, builds a structured knowledge model, and gives developers an interactive workspace for architecture, search, documentation, and repository Q&A.
+DevLens AI is an AI-powered repository understanding and onboarding workspace. A developer pastes a GitHub repository URL, DevLens analyzes the codebase, explains what the project does, highlights important files, supports code search, and answers repository-aware questions with file-backed citations.
+
+V1 is deliberately focused. DevLens AI is not a multi-agent command center, documentation suite, graph dashboard, IDE replacement, or autonomous coding agent. Backend capabilities may support future versions, but the visible V1 product stays centered on repository understanding.
 
 ## Milestone Status
 
 - Milestone 1: Product and architecture blueprint complete.
 - Milestone 2: Monorepo foundation complete.
 - Milestone 3: Repository ingestion MVP complete.
+- Current V1 direction: focused repository understanding workspace with Guide, Files, Search, and one DevLens AI assistant.
 
 ## Apps
 
