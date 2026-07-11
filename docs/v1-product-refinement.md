@@ -1,6 +1,8 @@
 # DevLens AI V1 Product Refinement
 
-DevLens AI V1 is a focused AI-powered repository understanding and onboarding workspace. A developer pastes a GitHub repository URL, DevLens analyzes the repo, explains what the project does, shows important files, supports search, and provides one DevLens AI assistant for file-backed questions.
+DevLens AI V1 is a focused repository understanding and onboarding workspace. A developer pastes a GitHub repository URL, DevLens analyzes the repo, explains what the project does, shows important files, supports search, and provides one DevLens AI assistant for file-backed questions.
+
+Phase 10 froze the file-backed V1 workspace. Phase 11 adds optional provider-backed answers inside the existing assistant while keeping repository data and citations as the grounding layer.
 
 The product should solve one problem exceptionally well: help developers understand unfamiliar GitHub repositories in minutes instead of days.
 
@@ -23,7 +25,7 @@ Every V1 feature should support that promise directly.
 3. The developer sees analysis progress and completion state.
 4. DevLens shows a Repo Brief with the most useful repository facts.
 5. The developer explores the file tree and source previews.
-6. The developer searches files, symbols, and indexed code chunks.
+6. The developer searches files, source lines, and discovered code details.
 7. The developer asks DevLens AI questions about the codebase.
 8. DevLens AI answers with citations that open the relevant files or symbols.
 
@@ -35,8 +37,8 @@ Every V1 feature should support that promise directly.
 - Every screen should answer one developer question.
 - Reduce clicks and cognitive load.
 - Keep the experience closer to Cursor, GitHub, VS Code, and Linear than to an admin console.
-- Prefer deterministic, file-backed intelligence before adding generative AI.
-- Treat symbols, embeddings, queues, and graph data as internal capabilities unless they directly improve the user experience.
+- Prefer file-backed intelligence before adding provider-backed answers.
+- Treat implementation details as internal capabilities unless they directly improve the user experience.
 
 ## V1 Surfaces To Keep
 
@@ -74,12 +76,12 @@ Repository Explorer should be the main navigation experience. Keep:
 
 ### Global Search
 
-Search should be a primary workflow. It should support file, symbol, semantic, and chunk search without requiring the user to understand how search is implemented.
+Search should be a primary workflow. It should support file, source, and code-detail search without requiring the user to understand how search is implemented.
 
 Search results should include:
 
 - File path.
-- Symbol or chunk context when available.
+- Code context when available.
 - Line numbers when available.
 - Preview text.
 - Open source action.
@@ -168,7 +170,7 @@ Settings should stay out of the main V1 workflow unless it contains real control
 - Treat broad agent, documentation, graph, dashboard, admin, billing, and autonomous coding ideas as hidden or V2+ unless explicitly approved.
 - Do not delete useful backend capability just because it is hidden from V1.
 - Keep the visible product focused on repository understanding, file exploration, search, guided investigation, and cited answers.
-- Prefer deterministic, file-backed behavior first; add real AI only where it improves explanation quality and keeps citations/fallbacks.
+- Prefer file-backed behavior first; add provider-backed answers only where they improve explanation quality and keep citations/fallbacks.
 
 ### Phase 1: Simplify UI Shell
 
@@ -182,7 +184,7 @@ Settings should stay out of the main V1 workflow unless it contains real control
 ### Phase 2: Convert Docs Summary Into Repo Brief
 
 - Rename the visible Docs summary surface to Repo Brief.
-- Keep deterministic summary data.
+- Keep file-backed summary data.
 - Hide README draft and architecture notes generation buttons from the primary UI.
 - Include key files, symbols, testing signals, health signals, and suggested starting point.
 
@@ -218,6 +220,24 @@ Only after the core experience is sharp, consider reintroducing:
 - Advanced repository health scoring.
 - Team/workspace settings.
 
+### Phase 10: V1 Freeze and Release Notes
+
+- Validate the frozen V1 flow end to end.
+- Keep the layout fixed: Repository Status/File Tree/File Filter, Guide/Files/Search, and one DevLens AI Assistant.
+- Document local run steps, required local services, the tested demo repo, V1 capabilities, and known limitations.
+- Keep the assistant file-backed and citation-driven.
+- Do not add provider calls, visible multiple agents, new top-level tabs, or hidden future backend features to the V1 surface.
+- Note that older analyses may need re-analysis for README/docs/config preview coverage.
+
+### Phase 11: Provider-Backed AI Integration
+
+- Add an OpenAI/provider-backed answer path only after the V1 file-backed flow is validated.
+- Preserve citations, source opening, and honest uncertainty.
+- Keep the existing assistant panel as the only visible assistant.
+- Use repository data first, then enrich explanation quality with provider responses.
+- Provide a clear fallback when provider credentials are missing or a provider call fails.
+- Do not require provider credentials for local boot or repository analysis.
+
 ## Success Criteria
 
 A developer opening DevLens AI should quickly understand:
@@ -240,5 +260,5 @@ If a feature does not directly help with those outcomes, it should be hidden or 
 - Complex graph-first navigation.
 - Public architecture or dependency graph pages as primary surfaces.
 - New database tables for generated docs.
-- AI/OpenAI calls before the deterministic and retrieval-backed experience is clear.
-- Exposing internal services such as embeddings, retrieval pipelines, or knowledge graph agents.
+- OpenAI/provider calls before the V1 file-backed experience is validated.
+- Exposing internal services or future backend workflow labels.

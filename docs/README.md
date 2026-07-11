@@ -1,64 +1,101 @@
 # DevLens AI Documentation
 
-This folder contains both current V1 direction docs and earlier architecture planning notes.
+This folder contains the current V1 freeze notes plus earlier architecture planning. For V1 product decisions, start with [v1-product-refinement.md](v1-product-refinement.md). Older milestone docs are useful background, but they do not override the focused V1 workspace.
 
-Current V1 direction: DevLens AI is a focused AI-powered repository understanding and onboarding workspace. The product should help a developer paste a GitHub repository URL, analyze the codebase, understand what it does, explore important files, search the codebase, and ask repository-aware questions with file-backed citations.
+## V1 Freeze Summary
 
-For V1, treat [v1-product-refinement.md](v1-product-refinement.md) as the product direction source. Older milestone and architecture documents may describe broader future capabilities such as multiple agents, LangGraph workflows, documentation generation, knowledge graphs, diagrams, admin features, or billing. Those ideas are historical or V2+ unless they directly support the focused V1 workflow.
+DevLens AI V1 is a repository understanding and onboarding workspace for public GitHub repositories. The frozen visible layout is:
 
-## Files
+- Left: Repository Status, File Tree, and File Filter.
+- Center: Guide, Files, and Search.
+- Right: one DevLens AI Assistant.
 
-- [v1-product-refinement.md](v1-product-refinement.md): current V1 product scope, frozen workspace direction, assistant expectations, features to keep, and features to hide or defer.
-- [milestone-1-blueprint.md](milestone-1-blueprint.md): PRD, MVP scope, architecture, service design, decisions, best practices, mistakes, and interview discussion points.
-- [data-model-and-api.md](data-model-and-api.md): database schema, ER diagram, and API documentation.
-- [ai-and-pipeline-design.md](ai-and-pipeline-design.md): earlier AI agents, LangGraph workflow, RAG pipeline, knowledge graph, queue architecture, and repository parsing pipeline notes. Keep these as hidden/future infrastructure context, not visible V1 product scope.
-- [ux-roadmap-and-delivery.md](ux-roadmap-and-delivery.md): UI/UX design, wireframes, deployment, CI/CD, testing, monitoring, security, roadmap, and sprint plan.
+The V1 assistant uses existing repository analysis data and citations. Phase 11 adds an optional provider-backed path inside the same assistant, but missing credentials fall back to file-backed answers.
 
-## Deliverable Map
+## Current V1 Capabilities
 
-1. Current V1 Direction: `v1-product-refinement.md`
-2. Historical PRD: `milestone-1-blueprint.md`
-3. Feature Breakdown: `milestone-1-blueprint.md`
-4. System Architecture: `milestone-1-blueprint.md`
-5. Microservice Design: `milestone-1-blueprint.md`
-6. Database Schema: `data-model-and-api.md`
-7. ER Diagram: `data-model-and-api.md`
-8. API Documentation: `data-model-and-api.md`
-9. Folder Structure: `milestone-1-blueprint.md`
-10. UI/UX Design: `ux-roadmap-and-delivery.md`
-11. Wireframes: `ux-roadmap-and-delivery.md`
-12. AI Agent Architecture: `ai-and-pipeline-design.md`
-13. LangGraph Workflow: `ai-and-pipeline-design.md`
-14. RAG Pipeline: `ai-and-pipeline-design.md`
-15. Knowledge Graph Design: `ai-and-pipeline-design.md`
-16. Queue Architecture: `ai-and-pipeline-design.md`
-17. Repository Parsing Pipeline: `ai-and-pipeline-design.md`
-18. Background Job Design: `ai-and-pipeline-design.md`
-19. Authentication Flow: `milestone-1-blueprint.md`, `data-model-and-api.md`
-20. GitHub Integration: `milestone-1-blueprint.md`, `data-model-and-api.md`
-21. Deployment Architecture: `ux-roadmap-and-delivery.md`
-22. CI/CD Pipeline: `ux-roadmap-and-delivery.md`
-23. Testing Strategy: `ux-roadmap-and-delivery.md`
-24. Monitoring & Logging: `ux-roadmap-and-delivery.md`
-25. Scalability Plan: `ux-roadmap-and-delivery.md`
-26. Security Plan: `ux-roadmap-and-delivery.md`
-27. Development Roadmap: `ux-roadmap-and-delivery.md`
-28. Sprint-wise Implementation Plan: `ux-roadmap-and-delivery.md`
-29. MVP 2-4 Weeks: `ux-roadmap-and-delivery.md`
-30. Version 2 Features: `milestone-1-blueprint.md`
-31. Startup Roadmap: `ux-roadmap-and-delivery.md`
+- Analyze a public GitHub repository and show progress through completion or failure.
+- Render the Repository Guide with project summary, stack hints, important files, reading order, and health signals.
+- Browse and filter files, preview source, README/docs/config files, and inspect selected-file details.
+- Search file names, source lines, and discovered code details.
+- Run the guided walkthrough, inspect evidence, continue through recommended files, and produce a completion handoff.
+- Copy a shareable onboarding recap.
+- Open citations in Files and highlight cited lines when available.
 
-## Approval Gate
+Tested demo repository:
 
-V1 work should follow `v1-product-refinement.md` first. Older milestone docs are useful for infrastructure context, but they do not override the focused V1 product scope.
+```text
+https://github.com/Anwar-04/linkforge-url-shortener
+```
 
-Milestone 2 scope:
+## Local Run Notes
 
-- Scaffold monorepo.
-- Create Next.js web app.
-- Create NestJS API Gateway.
-- Create FastAPI AI Service.
-- Create repository and knowledge worker placeholders.
-- Add Docker Compose for PostgreSQL, Redis, and Qdrant.
-- Add shared config/types.
-- Add health checks and initial development scripts.
+Install dependencies from the repository root:
+
+```bash
+npm install
+```
+
+Start services:
+
+```bash
+npm run docker:up
+```
+
+If needed on Windows, use:
+
+```bash
+docker-compose -f infra/docker/docker-compose.yml up --build
+```
+
+Expected local endpoints and services:
+
+- Web: `http://localhost:3000`
+- API health: `http://localhost:4000/health`
+- PostgreSQL: `localhost:55452`
+- Redis: `localhost:6379`
+- Qdrant: `http://localhost:6333`
+- MinIO: `http://localhost:9000`
+
+Optional provider configuration:
+
+- `OPENAI_API_KEY`: enables enhanced assistant answers from the API service.
+- `OPENAI_MODEL`: optional model override, defaults to `gpt-4.1-mini`.
+
+## Phase 10 Validation Checklist
+
+```bash
+npm run typecheck -w @devlens/web
+npm run build -w @devlens/web
+npm run typecheck -w @devlens/api
+npm run build -w @devlens/api
+npm run typecheck -w @devlens/repository-worker
+npm run build -w @devlens/repository-worker
+```
+
+Manual V1 smoke test:
+
+- `http://localhost:4000/health` returns ok.
+- `http://localhost:3000` loads.
+- Fresh analysis of `https://github.com/Anwar-04/linkforge-url-shortener` completes.
+- Guide, Files, Search, README preview, selected-file details, guided investigation, walkthrough evidence, completion handoff, Copy recap, and citation open/highlight behavior work.
+- Fake `README.routes.js` or `README.controller.js` suggestions do not appear.
+
+## Known Limitations
+
+- V1 is scoped to repository understanding, not editing code or opening pull requests.
+- The visible assistant is file-backed from current repository data; provider-backed answers are optional and must preserve citations.
+- Older analyses may need re-analysis for README/docs/config preview coverage.
+- Citation highlighting depends on available line ranges.
+- Hidden backend surfaces for future generated docs, diagrams, and provider workflows should not be exposed in V1.
+
+## Documentation Map
+
+- [v1-product-refinement.md](v1-product-refinement.md): current V1 product scope, frozen layout, capabilities, limitations, and Phase 11 direction.
+- [milestone-1-blueprint.md](milestone-1-blueprint.md): historical PRD and architecture blueprint.
+- [milestone-2-foundation.md](milestone-2-foundation.md): monorepo foundation notes.
+- [milestone-3-ingestion.md](milestone-3-ingestion.md): repository ingestion MVP notes.
+- [milestone-4-knowledge-search.md](milestone-4-knowledge-search.md): historical search and knowledge model notes.
+- [data-model-and-api.md](data-model-and-api.md): database and API reference.
+- [ai-and-pipeline-design.md](ai-and-pipeline-design.md): earlier provider and workflow planning, kept as future infrastructure context.
+- [ux-roadmap-and-delivery.md](ux-roadmap-and-delivery.md): historical UX and delivery roadmap.

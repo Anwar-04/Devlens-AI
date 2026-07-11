@@ -20,6 +20,13 @@
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1"
   },
+  "jest": {
+    "preset": "ts-jest",
+    "testEnvironment": "node",
+    "testMatch": [
+      "<rootDir>/src/**/*.spec.ts"
+    ]
+  },
   "devDependencies": {
     "@nestjs/cli": "^10.4.8",
     "@nestjs/schematics": "^10.2.3",
@@ -31,4 +38,3 @@
     "typescript": "^5.7.2"
   }
 }
-

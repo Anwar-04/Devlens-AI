@@ -145,6 +145,15 @@ type DevlensCitation = {
 type DevlensResponse = {
   answer: string;
   citations: DevlensCitation[];
+  mode?: "provider" | "fallback" | "local";
+  fallbackReason?: "missing_credentials" | "provider_error" | "weak_citations";
+};
+
+type ProviderAssistantResponse = {
+  answer: string;
+  citations: DevlensCitation[];
+  mode: "provider" | "fallback";
+  fallbackReason?: "missing_credentials" | "provider_error" | "weak_citations";
 };
 
 type GuidedInvestigation = {
@@ -365,8 +374,8 @@ const pipelineSteps = [
   },
   {
     key: "saving_metadata",
-    label: "Saving metadata",
-    description: "Persisting repository knowledge",
+    label: "Preparing workspace",
+    description: "Organizing the guide, files, and search",
   },
   { key: "completed", label: "Completed", description: "Workspace is ready" },
 ];
@@ -522,6 +531,16 @@ function formatBytes(bytes: number): string {
 }
 
 function formatStepLabel(step: string): string {
+  const labels: Record<string, string> = {
+    queued: "Preparing",
+    cloning: "Fetching repository",
+    indexing_files: "Reading files",
+    detecting_stack: "Detecting stack",
+    saving_metadata: "Preparing workspace",
+    completed: "Completed",
+  };
+  if (labels[step]) return labels[step];
+
   return step
     .replace(/_/g, " ")
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
@@ -531,6 +550,55 @@ function statusTone(status?: JobStatus): string {
   if (status === "COMPLETED") return "text-mint";
   if (status === "FAILED" || status === "CANCELLED") return "text-red-600";
   return "text-signal";
+}
+
+function formatJobStatus(status?: JobStatus): string {
+  const labels: Record<JobStatus, string> = {
+    QUEUED: "Preparing",
+    RUNNING: "Analyzing",
+    COMPLETED: "Completed",
+    FAILED: "Needs attention",
+    CANCELLED: "Cancelled",
+  };
+  return status ? labels[status] : "Ready";
+}
+
+function getAnalysisStatusMessage(job: JobResponse | null, repositoryReady: boolean) {
+  if (!job) {
+    return "Paste a GitHub repository URL. DevLens will analyze the repo, build the file tree, prepare the guide, and enable file-backed questions.";
+  }
+  if (job.status === "COMPLETED" || repositoryReady) {
+    return "Analysis complete. Start with the Guide, open README or package files, then use Search or the walkthrough to inspect the code.";
+  }
+  if (job.status === "FAILED") {
+    return "Analysis needs attention. Verify the GitHub URL, make sure local services are running, then try again.";
+  }
+  if (job.status === "CANCELLED") {
+    return "Analysis was cancelled. Start a new analysis when you are ready.";
+  }
+  return "Analysis is running. Keep this workspace open; files, guide, search, and assistant context will appear as each step completes.";
+}
+
+function getActionableErrorMessage(error: unknown, fallback: string) {
+  const message = error instanceof Error ? error.message : fallback;
+  if (/fetch|failed to fetch|network|connection|ECONNREFUSED|closed unexpectedly/i.test(message)) {
+    return `${fallback} Check that the local API is running at ${API_URL}, then try again.`;
+  }
+  return `${message} Verify the GitHub URL and try again.`;
+}
+
+function getAssistantStatusLabel(response?: DevlensResponse | null) {
+  if (!response || response.mode !== "fallback") return null;
+  if (response.fallbackReason === "missing_credentials") {
+    return "Enhanced answer unavailable. Showing file-backed answer.";
+  }
+  if (response.fallbackReason === "weak_citations") {
+    return "Answer kept to verified citations.";
+  }
+  if (response.fallbackReason === "provider_error") {
+    return "Enhanced answer failed. Showing file-backed answer.";
+  }
+  return null;
 }
 
 function getStepIndex(step?: string): number {
@@ -1440,7 +1508,7 @@ function buildWalkthroughEvidenceItems({
         : `Inspect ${symbols
             .slice(0, 3)
             .map((symbol) => symbol.name)
-            .join(", ")} as the important code signals in this file.`,
+            .join(", ")} as the important code details in this file.`,
       citation: symbolCitations[0] ?? sourceCitation,
       priority: "high",
     });
@@ -1920,7 +1988,7 @@ function buildTechnicalOverviewItems(
       icon: Braces,
       label: "Complexity",
       value: inferComplexity(summary),
-      description: "Based on file count and indexed code signals.",
+      description: "Based on file count and discovered code details.",
     },
     {
       icon: GitPullRequest,
@@ -2645,6 +2713,10 @@ function FileSourcePreview({
   const hasSourceLines = Boolean(sourceSnippet);
   const sourceLineCount = source?.file.previewLines.length ?? 0;
   const sourcePreviewHeight = "min(70vh, 760px)";
+  const selectedPath = selectedNode?.kind === "file" ? selectedNode.path : "";
+  const missingPreviewMessage = isDocsOrConfigPath(selectedPath)
+    ? "This looks like a README, docs, or config file from an older analysis. Analyze the repository again to refresh its preview, or open a nearby guide file."
+    : "DevLens has file metadata for this path. Try another file or search for a function name to jump into source.";
   const fileMatter =
     selectedNode?.kind === "file"
       ? buildFileMatterSummary(selectedNode.path, relatedSymbols)
@@ -3019,7 +3091,7 @@ function FileSourcePreview({
                 <FileCode2 className="mx-auto mb-3 text-signal" />
                 <p className="font-semibold text-white">No code preview yet</p>
                 <p className="mt-2 max-w-md text-sm leading-6">
-                  DevLens has file metadata for this path. Try another file or search for a function name to jump into source.
+                  {missingPreviewMessage}
                 </p>
               </div>
             </div>
@@ -3041,7 +3113,7 @@ function FileSourcePreview({
                       {item}
                     </span>
                   )) : (
-                    <p className="text-sm leading-6 text-graphite">No indexed {String(label).toLowerCase()} detected yet.</p>
+                    <p className="text-sm leading-6 text-graphite">No {String(label).toLowerCase()} detected yet.</p>
                   )}
                 </div>
               </div>
@@ -3672,7 +3744,7 @@ function SymbolGraphPanel({
               <Braces className="mx-auto mb-3 text-signal" />
               <p className="font-semibold">No symbol relationships available</p>
               <p className="mt-2 max-w-md text-sm leading-6 text-graphite">
-                No code signals were detected for this repository.
+                No code details were detected for this repository.
               </p>
             </div>
           </div>
@@ -4089,7 +4161,7 @@ function RepoBriefPanel({
                   ))}
                 {summary.queuedSections.length ? (
                   <div className="rounded-md bg-cloud px-3 py-2">
-                    <p className="font-semibold text-ink">Queued follow-ups</p>
+                    <p className="font-semibold text-ink">Suggested follow-ups</p>
                     <p className="mt-1">
                       {summary.queuedSections.map((section) => section.title).join(", ")}
                     </p>
@@ -4110,7 +4182,9 @@ function RepoBriefPanel({
 }
 
 export default function Home() {
-  const [repoUrl, setRepoUrl] = useState("https://github.com/vercel/ms");
+  const [repoUrl, setRepoUrl] = useState(
+    "https://github.com/Anwar-04/linkforge-url-shortener",
+  );
   const [job, setJob] = useState<JobResponse | null>(null);
   const [tree, setTree] = useState<TreeResponse | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -4469,7 +4543,7 @@ export default function Home() {
         if (!cancelled) {
           setSelectedFileSource(null);
           setFileSourceError(
-            err instanceof Error ? err.message : "Unable to load file preview.",
+            getActionableErrorMessage(err, "Unable to load file preview."),
           );
         }
       })
@@ -4513,9 +4587,7 @@ export default function Home() {
         if (!cancelled) {
           setDocsSummary(null);
           setDocsSummaryError(
-            err instanceof Error
-              ? err.message
-              : "Unable to load Repository Guide.",
+            getActionableErrorMessage(err, "Unable to load Repository Guide."),
           );
         }
       })
@@ -4554,7 +4626,7 @@ export default function Home() {
       setSelectedSymbolDetail(null);
     } catch (err) {
       setSymbolsError(
-        err instanceof Error ? err.message : "Unable to load symbol intelligence.",
+        getActionableErrorMessage(err, "Unable to load code details."),
       );
     } finally {
       setIsLoadingSymbols(false);
@@ -4614,9 +4686,7 @@ export default function Home() {
       );
       setJob((await jobResponse.json()) as JobResponse);
     } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "Unable to analyze repository.",
-      );
+      setError(getActionableErrorMessage(err, "Unable to start repository analysis."));
     } finally {
       setIsSubmitting(false);
     }
@@ -4644,6 +4714,107 @@ export default function Home() {
     return (await response.json()) as SearchResponse;
   }
 
+  function buildSelectedFilePreviewText() {
+    if (!selectedFileSource?.file.previewLines.length) return undefined;
+    return selectedFileSource.file.previewLines
+      .slice(0, 80)
+      .map((line) => `${line.lineNumber}: ${line.content}`)
+      .join("\n");
+  }
+
+  function shouldUseProviderAssistant(prompt: string) {
+    return !/walkthrough|handoff|recap|export|shareable|onboarding notes|teammate|what did i learn|what is still unknown|after this walkthrough|why am i reading|what should i look for|what depends|what should i verify|safe to skip|show evidence|mark this file done|skip this file|summarize walkthrough progress/i.test(prompt);
+  }
+
+  async function fetchProviderAssistantResponse(
+    prompt: string,
+    localResponse: DevlensResponse,
+    assistantSearch?: SearchResponse | null,
+  ): Promise<DevlensResponse> {
+    if (!job?.repositoryId || !repositoryReady || !docsSummary) {
+      return { ...localResponse, mode: "local" };
+    }
+
+    const response = await fetch(
+      `${API_URL}/repositories/${job.repositoryId}/assistant/ask`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          question: prompt,
+          context: {
+            repository: {
+              owner: docsSummary.repository.owner,
+              name: docsSummary.repository.name,
+              url: docsSummary.repository.url,
+              languages: docsSummary.repository.detectedLanguages,
+              frameworks: docsSummary.repository.detectedFrameworks,
+              fileCount: docsSummary.repository.fileCount,
+            },
+            guide: {
+              summary: docsSummary.understanding.summary,
+              purpose: docsSummary.understanding.purpose,
+              architecture: docsSummary.understanding.architecture,
+              readingOrder: buildReadingOrderCitations(docsSummary),
+            },
+            selectedFile:
+              selectedNode?.kind === "file"
+                ? {
+                    path: selectedNode.path,
+                    role: getFileRoleLabel(selectedNode.path),
+                    previewStartLine:
+                      selectedFileSource?.file.previewStartLine ?? undefined,
+                    previewEndLine:
+                      selectedFileSource?.file.previewEndLine ?? undefined,
+                    preview: buildSelectedFilePreviewText(),
+                    related: selectedFileSymbols.slice(0, 5).map(buildSymbolCitation),
+                  }
+                : undefined,
+            searchResults: [
+              ...localResponse.citations,
+              ...((assistantSearch?.results ?? []).slice(0, 5).map(buildSearchCitation)),
+            ],
+            sourceSnippets:
+              selectedNode?.kind === "file" && selectedFileSource?.file.previewLines.length
+                ? [
+                    {
+                      path: selectedNode.path,
+                      startLine:
+                        selectedFileSource.file.previewStartLine ?? undefined,
+                      endLine: selectedFileSource.file.previewEndLine ?? undefined,
+                      content: buildSelectedFilePreviewText() ?? "",
+                    },
+                  ]
+                : [],
+            localAnswer: localResponse.answer,
+          },
+        }),
+      },
+    );
+
+    if (!response.ok) {
+      return {
+        ...localResponse,
+        mode: "fallback",
+        fallbackReason: "provider_error",
+      };
+    }
+
+    const providerResponse = (await response.json()) as ProviderAssistantResponse;
+    if (providerResponse.mode === "fallback") {
+      return {
+        answer: providerResponse.answer || localResponse.answer,
+        citations: providerResponse.citations.length
+          ? providerResponse.citations
+          : localResponse.citations,
+        mode: "fallback",
+        fallbackReason: providerResponse.fallbackReason,
+      };
+    }
+
+    return providerResponse;
+  }
+
   async function searchRepository(
     event?: React.FormEvent<HTMLFormElement>,
     nextQuery?: string,
@@ -4660,7 +4831,7 @@ export default function Home() {
       if (nextSearchResponse) setSearchResponse(nextSearchResponse);
     } catch (err) {
       setSearchError(
-        err instanceof Error ? err.message : "Unable to search repository.",
+        getActionableErrorMessage(err, "Unable to search repository."),
       );
     } finally {
       setIsSearching(false);
@@ -5031,18 +5202,6 @@ export default function Home() {
         };
       }
 
-      if (walkthroughSummary.isComplete) {
-        return buildWalkthroughHandoffResponse(
-          buildWalkthroughHandoff(
-            docsSummary,
-            walkthroughSummary,
-            walkthroughState,
-            inspectedFilePaths,
-            guidedInvestigation,
-          ),
-        );
-      }
-
       if (/copy recap|export handoff|shareable recap|make onboarding notes|summarize this for a teammate|create handoff notes/i.test(prompt)) {
         return buildRepositoryRecapResponse(
           docsSummary,
@@ -5054,6 +5213,18 @@ export default function Home() {
             guidedInvestigation,
           ),
           walkthroughSummary,
+        );
+      }
+
+      if (walkthroughSummary.isComplete) {
+        return buildWalkthroughHandoffResponse(
+          buildWalkthroughHandoff(
+            docsSummary,
+            walkthroughSummary,
+            walkthroughState,
+            inspectedFilePaths,
+            guidedInvestigation,
+          ),
         );
       }
 
@@ -5170,7 +5341,7 @@ export default function Home() {
           docsSummary,
         ).toLowerCase()}, and the recommended onboarding time is ${estimateOnboarding(
           docsSummary,
-        )}. The Repository Guide describes the architecture as: ${docsSummary.understanding.architecture} Start with the reading-order citations, then inspect related code signals.`,
+        )}. The Repository Guide describes the architecture as: ${docsSummary.understanding.architecture} Start with the reading-order citations, then inspect related code details.`,
         citations: dedupeCitations([
           ...readingOrder.slice(0, 3),
           ...codeSignals.slice(0, 2).map(buildSymbolCitation),
@@ -5203,7 +5374,7 @@ export default function Home() {
             : "Open the source preview for line-level context."
         }${
           relatedNames
-            ? ` Follow the related code signals next: ${relatedNames}.`
+            ? ` Follow the related code details next: ${relatedNames}.`
             : ` Use ${fileMatter.suggestedNext} as the next recommended step.`
         }`,
         citations: dedupeCitations([
@@ -5233,7 +5404,7 @@ export default function Home() {
           : `Use the repository reading order as the next trail: ${readingOrder
               .slice(0, 4)
               .map((item, index) => `${index + 1}. ${item.path}`)
-              .join(" ")}. Open each citation in Files and follow related code signals from there.`,
+              .join(" ")}. Open each citation in Files and follow related code details from there.`,
         citations,
       };
     }
@@ -5244,7 +5415,7 @@ export default function Home() {
           docsSummary,
         )} with ${docsSummary.repository.fileCount} files, ${
           docsSummary.repository.detectedLanguages.join(", ") || "detected source"
-        }, and ${docsSummary.symbols.counts.total} code signals. The guide's purpose is: ${docsSummary.understanding.purpose}`,
+        }, and ${docsSummary.symbols.counts.total} code details. The guide's purpose is: ${docsSummary.understanding.purpose}`,
         citations: dedupeCitations([
           ...readingOrder.slice(0, 3),
           ...codeSignals.slice(0, 2).map(buildSymbolCitation),
@@ -5254,7 +5425,7 @@ export default function Home() {
 
     if (codeSignals.length) {
       return {
-        answer: `Key code signals include ${codeSignals
+        answer: `Key code details include ${codeSignals
           .map((symbol) => `${symbol.name} in ${symbol.filePath}`)
           .join("; ")}. These are good anchors for understanding behavior.`,
         citations: codeSignals.map(buildSymbolCitation),
@@ -5315,7 +5486,19 @@ export default function Home() {
         setSearchResponse(assistantSearch);
       }
 
-      setDevlensResponse(buildDevlensResponse(trimmedPrompt, assistantSearch));
+      const localResponse = {
+        ...buildDevlensResponse(trimmedPrompt, assistantSearch),
+        mode: "local" as const,
+      };
+      const nextResponse = shouldUseProviderAssistant(trimmedPrompt)
+        ? await fetchProviderAssistantResponse(
+            trimmedPrompt,
+            localResponse,
+            assistantSearch,
+          )
+        : localResponse;
+
+      setDevlensResponse(nextResponse);
     } catch (err) {
       setDevlensResponse({
         answer:
@@ -5327,6 +5510,22 @@ export default function Home() {
     } finally {
       setIsAskingDevlens(false);
     }
+  }
+
+  function handleSuggestedQuestion(prompt: string) {
+    if (prompt === "Start walkthrough") {
+      startWalkthrough();
+      return;
+    }
+    if (prompt === "Continue walkthrough") {
+      continueWalkthrough();
+      return;
+    }
+    if (prompt === "Copy recap" && walkthroughHandoff) {
+      void copyRepositoryRecap();
+      return;
+    }
+    void askDevlens(prompt);
   }
 
   const activeStepIndex = getStepIndex(job?.currentStep);
@@ -5373,7 +5572,7 @@ export default function Home() {
                       : "bg-white text-graphite"
                 }`}
               >
-                {job?.status ?? "Idle"}
+                {formatJobStatus(job?.status)}
               </span>
             </div>
 
@@ -5384,7 +5583,7 @@ export default function Home() {
                     {job.status === "COMPLETED"
                       ? `Analysis complete - ${repository?.fileCount ?? tree?.fileCount ?? 0} files - ${
                           symbolsResponse?.count ?? docsSummary?.symbols.counts.total ?? 0
-                        } code signals - ${calculateDuration(job)}`
+                        } code details - ${calculateDuration(job)}`
                       : formatStepLabel(job.currentStep)}
                   </span>
                   <span className="font-semibold text-ink">{job.progress}%</span>
@@ -5396,7 +5595,9 @@ export default function Home() {
                   />
                 </div>
                 {job.errorMessage ? (
-                  <p className="mt-2 text-xs text-red-600">{job.errorMessage}</p>
+                  <p className="mt-2 text-xs leading-5 text-red-600">
+                    {job.errorMessage} Verify the repository URL and local services, then retry.
+                  </p>
                 ) : null}
               </div>
             ) : null}
@@ -5521,7 +5722,9 @@ export default function Home() {
                 />
               ) : (
                 <div className="grid h-full place-items-center px-3 text-center text-sm leading-6 text-graphite">
-                  Analyze a repository to browse files.
+                  {repositoryReady
+                    ? "No files match the current filter. Clear the filter or expand the tree."
+                    : "Paste a GitHub URL and run analysis to browse files here."}
                 </div>
               )}
             </div>
@@ -5537,8 +5740,8 @@ export default function Home() {
               Repository Workspace
             </h1>
             <p className="mt-1 max-w-2xl text-sm leading-6 text-graphite">
-              Paste a GitHub repository, analyze its structure, explore files,
-              search the codebase, and prepare for file-backed Q&A.
+              Paste a GitHub repository URL. DevLens will prepare the guide,
+              file tree, search, walkthrough, and file-backed assistant context.
             </p>
           </div>
 
@@ -5564,15 +5767,15 @@ export default function Home() {
               </button>
             </div>
             {error ? (
-              <div className="mt-3 flex items-center gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-                <AlertCircle size={16} />
+              <div className="mt-3 flex items-start gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm leading-6 text-red-700">
+                <AlertCircle size={16} className="mt-0.5 shrink-0" />
                 {error}
               </div>
             ) : null}
             {job ? (
               <div className="mt-3 rounded-md border border-line bg-cloud p-3 text-sm">
                 <div className="mb-2 flex items-center justify-between">
-                  <span className={statusTone(job.status)}>{job.status}</span>
+                  <span className={statusTone(job.status)}>{formatJobStatus(job.status)}</span>
                   <span className="text-graphite">
                     {formatStepLabel(job.currentStep)}
                   </span>
@@ -5588,11 +5791,20 @@ export default function Home() {
                   <Clock3 size={13} />
                   Elapsed: {calculateDuration(job)}
                   {job.errorMessage ? (
-                    <span className="text-red-600">- {job.errorMessage}</span>
+                    <span className="text-red-600">
+                      - {job.errorMessage} Check the URL and local services, then retry.
+                    </span>
                   ) : null}
                 </div>
+                <p className="mt-2 text-xs leading-5 text-graphite">
+                  {getAnalysisStatusMessage(job, repositoryReady)}
+                </p>
               </div>
-            ) : null}
+            ) : (
+              <p className="mt-3 text-xs leading-5 text-graphite">
+                First run: use a public GitHub URL. After analysis, open Guide for the overview, Files for source, and Search for focused code lookup.
+              </p>
+            )}
           </div>
 
           <div className="mb-6 rounded-md border border-line bg-white px-4 py-3 shadow-sm">
@@ -5882,7 +6094,7 @@ export default function Home() {
                     </div>
                   ) : (
                     <div className="grid min-h-0 flex-1 place-items-center rounded-md border border-line bg-cloud p-4 text-center text-sm leading-6 text-graphite">
-                      No code signals were detected for this repository.
+                      No code details were detected for this repository.
                     </div>
                   )}
                 </div>
@@ -6055,9 +6267,15 @@ export default function Home() {
                 ) : null}
 
                 {!repositoryReady ? (
-                  <div className="grid h-full place-items-center rounded-md border border-line bg-cloud text-center text-sm leading-6 text-graphite">
-                    Search becomes available after repository analysis
-                    completes.
+                  <div className="grid h-full place-items-center rounded-md border border-line bg-cloud p-6 text-center text-sm leading-6 text-graphite">
+                    <div>
+                      <Search className="mx-auto mb-3 text-signal" />
+                      <p className="font-semibold text-ink">Search unlocks after analysis</p>
+                      <p className="mt-2 max-w-sm">
+                        Paste a GitHub URL and run analysis. Then search files,
+                        symbols, and source lines from this repository.
+                      </p>
+                    </div>
                   </div>
                 ) : searchResponse ? (
                   <div>
@@ -6135,15 +6353,18 @@ export default function Home() {
                           </button>
                         ))
                     ) : (
-                      <div className="rounded-md border border-line bg-cloud p-3 text-sm leading-6 text-graphite">
-                          No matching files or code signals found.
+                      <div className="rounded-md border border-line bg-cloud p-4 text-sm leading-6 text-graphite">
+                        <p className="font-semibold text-ink">No matches found</p>
+                        <p className="mt-1">
+                          Try a file name, route, feature word, or function name from the Guide.
+                        </p>
                       </div>
                     )}
                     </div>
                   </div>
                 ) : (
                   <div className="grid grid-cols-3 gap-3">
-                    {["function", "parse", "format"].map((query) => (
+                    {["auth", "route", "database"].map((query) => (
                       <button
                         key={query}
                         onClick={() => {
@@ -6193,30 +6414,23 @@ export default function Home() {
             {[
               "Start walkthrough",
               "Continue walkthrough",
-              "Where should I start?",
               "Explain this repository",
               "Explain selected file",
               "Why am I reading this file?",
               "What should I look for here?",
-              "What depends on this file?",
-              "What should I verify before moving on?",
               "Show evidence for this step",
               "Summarize walkthrough progress",
-              "Give me onboarding handoff notes",
               "Copy recap",
               "Summarize this for a teammate",
-              "What did I learn?",
-              "What is still unknown?",
               "What should I inspect next?",
               "What are the most important files?",
-              "Show request flow",
               "Find authentication",
               "Find business logic",
             ].map((prompt) => (
               <button
                 key={prompt}
                 type="button"
-                onClick={() => void askDevlens(prompt)}
+                onClick={() => handleSuggestedQuestion(prompt)}
                 disabled={isAskingDevlens}
                 className="rounded-full border border-line bg-white px-3 py-1.5 text-left text-xs font-medium text-graphite transition-colors hover:border-signal hover:bg-cloud hover:text-ink"
               >
@@ -6630,10 +6844,15 @@ export default function Home() {
                   ) : (
                     devlensResponse?.answer ??
                     (repositoryReady
-                      ? "Choose a question above. DevLens will use the Repository Guide, file tree, and code signals already available in this workspace."
+                      ? "Choose a question above. DevLens will use the Repository Guide, file tree, and code details already available in this workspace."
                       : "Analyze a repository first, then DevLens can guide you through where to start and what to inspect.")
                   )}
                 </p>
+                {getAssistantStatusLabel(devlensResponse) ? (
+                  <p className="mt-2 rounded bg-cloud px-2 py-1 text-xs leading-5 text-graphite">
+                    {getAssistantStatusLabel(devlensResponse)}
+                  </p>
+                ) : null}
                 {devlensResponse?.citations.length ? (
                   <div className="mt-3 border-t border-line pt-3">
                     <p className="text-xs font-semibold uppercase tracking-wide text-graphite">

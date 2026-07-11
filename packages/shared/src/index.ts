@@ -64,6 +64,61 @@ export interface KnowledgeIndexJobPayload {
   source: "repository-ingestion" | "manual";
 }
 
+export interface AssistantCitation {
+  path: string;
+  label: string;
+  reason: string;
+  startLine?: number;
+  endLine?: number;
+}
+
+export interface AssistantSourceSnippet {
+  path: string;
+  startLine?: number;
+  endLine?: number;
+  content: string;
+}
+
+export interface AssistantContext {
+  repository?: {
+    owner: string;
+    name: string;
+    url?: string;
+    languages?: string[];
+    frameworks?: string[];
+    fileCount?: number;
+  };
+  guide?: {
+    summary?: string;
+    purpose?: string;
+    architecture?: string;
+    readingOrder?: AssistantCitation[];
+  };
+  selectedFile?: {
+    path: string;
+    role?: string;
+    previewStartLine?: number;
+    previewEndLine?: number;
+    preview?: string;
+    related?: AssistantCitation[];
+  };
+  searchResults?: AssistantCitation[];
+  sourceSnippets?: AssistantSourceSnippet[];
+  localAnswer?: string;
+}
+
+export interface AssistantAskRequest {
+  question: string;
+  context: AssistantContext;
+}
+
+export interface AssistantAskResponse {
+  answer: string;
+  citations: AssistantCitation[];
+  mode: "provider" | "fallback";
+  fallbackReason?: "missing_credentials" | "provider_error" | "weak_citations";
+}
+
 export { EMBEDDING_DIMENSIONS, generateEmbedding } from "./embeddings.js";
 export {
   KNOWLEDGE_COLLECTION,

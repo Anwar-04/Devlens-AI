@@ -56,6 +56,8 @@
       QDRANT_URL: http://qdrant:6333
       JWT_SECRET: local-development-secret
       WEB_ORIGIN: http://localhost:3000
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4.1-mini}
     depends_on:
       postgres:
         condition: service_healthy
