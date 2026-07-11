@@ -59,12 +59,18 @@ const TEST_FILE_PATTERNS = [
 ];
 
 const EXTENSION_MAP: Record<string, string> = {
+  ".md": "Markdown",
+  ".mdx": "MDX",
   ".ts": "TypeScript",
   ".tsx": "TypeScript",
   ".js": "JavaScript",
   ".jsx": "JavaScript",
   ".mjs": "JavaScript",
   ".cjs": "JavaScript",
+  ".json": "JSON",
+  ".yaml": "YAML",
+  ".yml": "YAML",
+  ".txt": "Text",
   ".py": "Python",
   ".java": "Java",
   ".go": "Go",
@@ -120,6 +126,9 @@ interface SymbolReferenceEntry {
 }
 
 export function getLanguage(filePath: string): string | null {
+  const fileName = path.basename(filePath).toLowerCase();
+  if (fileName === ".env.example") return "Environment";
+
   const ext = path.extname(filePath).toLowerCase();
   return EXTENSION_MAP[ext] ?? null;
 }

@@ -159,6 +159,44 @@ type GuidedInvestigation = {
   summary: string;
 };
 
+type WalkthroughState = {
+  activeStepPath: string | null;
+  completedFiles: string[];
+  skippedFiles: string[];
+  lastOpenedCitation: DevlensCitation | null;
+  isComplete: boolean;
+};
+
+type WalkthroughSummary = {
+  path: DevlensCitation[];
+  current: DevlensCitation | null;
+  next: DevlensCitation | null;
+  completedCount: number;
+  skippedCount: number;
+  remainingCount: number;
+  progressLabel: string;
+  risks: string[];
+  isComplete: boolean;
+};
+
+type WalkthroughEvidenceItem = {
+  label: string;
+  detail: string;
+  citation: DevlensCitation;
+  priority: "high" | "medium" | "low";
+};
+
+type WalkthroughHandoff = {
+  projectSummary: string;
+  architecturePath: string;
+  inspected: DevlensCitation[];
+  skipped: DevlensCitation[];
+  findings: string[];
+  risks: string[];
+  nextDeepDive: DevlensCitation | null;
+  nextDeepDiveReason: string;
+};
+
 type SymbolRelation = {
   referenceId: string;
   referenceKind: "REFERENCE" | "CALL";
@@ -892,7 +930,23 @@ function buildCallNames(symbols: RepositorySymbol[]) {
   return [...calls].slice(0, 8);
 }
 
-function buildRelatedFileCandidates(path: string, symbols: RepositorySymbol[]) {
+function isDocsOrConfigPath(path: string) {
+  const normalized = path.toLowerCase();
+  const fileName = normalized.split("/").pop() ?? normalized;
+  return (
+    /^readme(\.|$)/i.test(fileName) ||
+    /\.(md|mdx|txt|ya?ml|json)$/i.test(fileName) ||
+    fileName === ".env.example" ||
+    fileName.includes("license") ||
+    fileName.includes("contributing")
+  );
+}
+
+function buildRelatedFileCandidates(
+  path: string,
+  symbols: RepositorySymbol[],
+  fallbackPaths: string[] = [],
+) {
   const files = new Set<string>();
   const fileName = path.split("/").pop() ?? path;
   const stem = fileName
@@ -906,18 +960,24 @@ function buildRelatedFileCandidates(path: string, symbols: RepositorySymbol[]) {
     symbol.incomingReferences.forEach((reference) => files.add(reference.symbol.filePath));
   });
 
-  [
-    `routes/${stem}.routes.${extension}`,
-    `controllers/${stem}.controller.${extension}`,
-    `services/${stem}.services.${extension}`,
-    `services/${stem}.service.${extension}`,
-    `validators/${stem}.validator.${extension}`,
-    `models/${stem}.model.${extension}`,
-    `schema/${stem}.schema.${extension}`,
-    `data/${stem}.json`,
-  ].forEach((candidate) => {
-    if (candidate !== path) files.add(candidate);
-  });
+  if (isDocsOrConfigPath(path)) {
+    fallbackPaths.forEach((candidate) => {
+      if (candidate !== path) files.add(candidate);
+    });
+  } else {
+    [
+      `routes/${stem}.routes.${extension}`,
+      `controllers/${stem}.controller.${extension}`,
+      `services/${stem}.services.${extension}`,
+      `services/${stem}.service.${extension}`,
+      `validators/${stem}.validator.${extension}`,
+      `models/${stem}.model.${extension}`,
+      `schema/${stem}.schema.${extension}`,
+      `data/${stem}.json`,
+    ].forEach((candidate) => {
+      if (candidate !== path) files.add(candidate);
+    });
+  }
 
   files.delete(path);
   return [...files].slice(0, 6);
@@ -997,6 +1057,10 @@ function buildReadingOrderCitations(
   );
 }
 
+function buildReadingOrderFallbackPaths(summary: DocsSummaryResponse | null) {
+  return summary ? buildReadingOrderCitations(summary).map((citation) => citation.path) : [];
+}
+
 function buildSearchTrail(results: SearchResult[]): string {
   return results
     .slice(0, 4)
@@ -1053,7 +1117,11 @@ function buildConnectionLabels(
     symbols.slice(0, 3).forEach((symbol) =>
       labels.add(`${symbol.name} (${getSymbolKindMeta(symbol.kind).singular})`),
     );
-    buildRelatedFileCandidates(selectedNode.path, symbols)
+    buildRelatedFileCandidates(
+      selectedNode.path,
+      symbols,
+      buildReadingOrderFallbackPaths(summary),
+    )
       .slice(0, 2)
       .forEach((path) => labels.add(path));
   }
@@ -1104,7 +1172,11 @@ function buildGuidedInvestigation({
   const inspectAfter = dedupeCitations([
     ...(selectedCitation ? [selectedCitation] : []),
     ...(selectedNode?.kind === "file"
-      ? buildRelatedFileCandidates(selectedNode.path, selectedFileSymbols)
+      ? buildRelatedFileCandidates(
+          selectedNode.path,
+          selectedFileSymbols,
+          readingOrder.map((citation) => citation.path),
+        )
           .map((path) => getCitationPath(path, readingOrder) ?? buildPathCitation(path))
       : []),
     ...readingOrder,
@@ -1154,6 +1226,591 @@ function buildGuidedInvestigation({
     summary: inspectedFilePaths.length
       ? `Inspected ${inspectedFilePaths.length} file${inspectedFilePaths.length === 1 ? "" : "s"}. Next recommended anchor: ${bestFileLabel}.`
       : `No files opened from guidance yet. Start with ${bestFileLabel}.`,
+  };
+}
+
+function getWalkthroughPath(summary: DocsSummaryResponse | null): DevlensCitation[] {
+  if (!summary) return [];
+  const readingOrder = buildReadingOrderCitations(summary);
+  if (readingOrder.length) return readingOrder;
+
+  return buildStartHereItems(summary)
+    .slice(0, 5)
+    .map((item) => buildPathCitation(item.path, item.reason));
+}
+
+function buildWalkthroughSummary(
+  summary: DocsSummaryResponse | null,
+  state: WalkthroughState,
+): WalkthroughSummary | null {
+  const path = getWalkthroughPath(summary);
+  if (!summary || !path.length) return null;
+
+  const completed = new Set(state.completedFiles);
+  const skipped = new Set(state.skippedFiles);
+  const activeStep =
+    state.activeStepPath && !state.isComplete
+      ? path.find((citation) => citation.path === state.activeStepPath) ?? null
+      : null;
+  const current =
+    activeStep ??
+    path.find(
+      (citation) =>
+        !completed.has(citation.path) && !skipped.has(citation.path),
+    ) ??
+    path[0] ??
+    null;
+  const currentIndex = current
+    ? path.findIndex((citation) => citation.path === current.path)
+    : -1;
+  const next =
+    currentIndex >= 0
+      ? path
+          .slice(currentIndex + 1)
+          .find(
+            (citation) =>
+              !completed.has(citation.path) && !skipped.has(citation.path),
+          ) ?? null
+      : null;
+  const remainingCount = path.filter(
+    (citation) =>
+      !completed.has(citation.path) && !skipped.has(citation.path),
+  ).length;
+  const completedCount = path.filter((citation) =>
+    completed.has(citation.path),
+  ).length;
+  const skippedCount = path.filter((citation) =>
+    skipped.has(citation.path),
+  ).length;
+  const isComplete =
+    state.isComplete || Boolean(path.length && remainingCount === 0);
+
+  return {
+    path,
+    current: isComplete ? null : current,
+    next: isComplete ? null : next,
+    completedCount,
+    skippedCount,
+    remainingCount: isComplete ? 0 : remainingCount,
+    progressLabel: `${completedCount}/${path.length} files done`,
+    risks: buildInvestigationRisks(summary),
+    isComplete,
+  };
+}
+
+function getWalkthroughCitationForPath(
+  summary: DocsSummaryResponse,
+  path: string,
+): DevlensCitation {
+  return (
+    getWalkthroughPath(summary).find((citation) => citation.path === path) ??
+    buildPathCitation(path)
+  );
+}
+
+function buildPreviewCitation(
+  path: string,
+  source: FileSourceResponse | null,
+  reason: string,
+): DevlensCitation {
+  return {
+    path,
+    label: path,
+    reason,
+    startLine: source?.file.previewStartLine ?? undefined,
+    endLine: source?.file.previewEndLine ?? undefined,
+  };
+}
+
+function buildWalkthroughNextCitations(
+  summary: DocsSummaryResponse,
+  currentPath: string,
+  symbols: RepositorySymbol[],
+): DevlensCitation[] {
+  const nextReadingItem = getNextReadingOrderItem(summary, currentPath);
+  const related = buildRelatedFileCandidates(
+    currentPath,
+    symbols,
+    buildReadingOrderFallbackPaths(summary),
+  ).map((path) => buildPathCitation(path, getPathReason(path)));
+  const guideFallback = buildKeyFileItems(summary).map((item) =>
+    buildPathCitation(item.path, item.reason),
+  );
+
+  return dedupeCitations([
+    ...(nextReadingItem
+      ? [
+          buildPathCitation(
+            nextReadingItem.file,
+            `Next in the Repository Guide: ${nextReadingItem.reason}`,
+          ),
+        ]
+      : []),
+    ...related,
+    ...guideFallback,
+  ])
+    .filter((citation) => citation.path !== currentPath)
+    .slice(0, 4);
+}
+
+function buildWalkthroughEvidenceItems({
+  summary,
+  current,
+  source,
+  symbols,
+  imports,
+  exports,
+  calls,
+  relatedFiles,
+}: {
+  summary: DocsSummaryResponse | null;
+  current: DevlensCitation | null;
+  source: FileSourceResponse | null;
+  symbols: RepositorySymbol[];
+  imports: string[];
+  exports: string[];
+  calls: string[];
+  relatedFiles: string[];
+}): WalkthroughEvidenceItem[] {
+  if (!summary || !current) return [];
+
+  const items: WalkthroughEvidenceItem[] = [];
+  const currentPath = current.path;
+  const sourceCitation = buildPreviewCitation(
+    currentPath,
+    source,
+    current.reason,
+  );
+  const nextCitations = buildWalkthroughNextCitations(
+    summary,
+    currentPath,
+    symbols,
+  );
+
+  items.push({
+    label: "Why this file",
+    detail: current.reason || getPathReason(currentPath),
+    citation: sourceCitation,
+    priority: "high",
+  });
+
+  if (source?.file.previewStartLine && source.file.previewEndLine) {
+    items.push({
+      label: "Source range",
+      detail: `Start with ${formatCompactLineRange({
+        startLine: source.file.previewStartLine,
+        endLine: source.file.previewEndLine,
+      })}; scan the visible setup, branching, and handoff points before moving on.`,
+      citation: sourceCitation,
+      priority: "high",
+    });
+  } else {
+    items.push({
+      label: "Source preview",
+      detail: "No source preview is open yet; open this file before marking the walkthrough step done.",
+      citation: current,
+      priority: "medium",
+    });
+  }
+
+  if (imports.length) {
+    items.push({
+      label: "Imports to check",
+      detail: `Notice ${imports.slice(0, 3).join(", ")}; these usually reveal framework, shared helper, or data dependencies.`,
+      citation: sourceCitation,
+      priority: "medium",
+    });
+  }
+
+  if (exports.length) {
+    items.push({
+      label: "Exports to understand",
+      detail: `Review ${exports.slice(0, 3).join(", ")}; exported names are the contract other files are likely to use.`,
+      citation: sourceCitation,
+      priority: "high",
+    });
+  }
+
+  if (calls.length || symbols.length) {
+    const symbolCitations = symbols.slice(0, 2).map(buildSymbolCitation);
+    items.push({
+      label: "Connected behavior",
+      detail: calls.length
+        ? `Follow calls or references such as ${calls.slice(0, 3).join(", ")} to see what this file depends on.`
+        : `Inspect ${symbols
+            .slice(0, 3)
+            .map((symbol) => symbol.name)
+            .join(", ")} as the important code signals in this file.`,
+      citation: symbolCitations[0] ?? sourceCitation,
+      priority: "high",
+    });
+  } else {
+    items.push({
+      label: "Uncertainty",
+      detail: "No connected symbols were found for this file yet; verify behavior through the source preview and related paths.",
+      citation: sourceCitation,
+      priority: "medium",
+    });
+  }
+
+  const nextTarget =
+    nextCitations[0] ??
+    (relatedFiles[0]
+      ? buildPathCitation(relatedFiles[0], getPathReason(relatedFiles[0]))
+      : null);
+  if (nextTarget) {
+    items.push({
+      label: "Open next",
+      detail: `${nextTarget.path} is the next useful follow-up because ${nextTarget.reason}.`,
+      citation: nextTarget,
+      priority: "medium",
+    });
+  }
+
+  return items.slice(0, 6);
+}
+
+function formatWalkthroughEvidenceForAnswer(items: WalkthroughEvidenceItem[]) {
+  if (!items.length) {
+    return "Open the current walkthrough file, read the visible source range, then follow the next cited file.";
+  }
+
+  return items
+    .slice(0, 4)
+    .map((item, index) => `${index + 1}. ${item.label}: ${item.detail}`)
+    .join(" ");
+}
+
+function isRiskRelatedPath(path: string): boolean {
+  return /auth|config|env|database|db|route|router|service|test|spec|security|token|session/i.test(
+    path,
+  );
+}
+
+function getWalkthroughCitationByPath(
+  summary: DocsSummaryResponse,
+  path: string,
+): DevlensCitation {
+  return getWalkthroughCitationForPath(summary, path);
+}
+
+function buildNextDeepDiveCitation(
+  summary: DocsSummaryResponse,
+  state: WalkthroughState,
+  inspectedFilePaths: string[],
+): { citation: DevlensCitation | null; reason: string } {
+  const alreadySeen = new Set([
+    ...state.completedFiles,
+    ...state.skippedFiles,
+    ...inspectedFilePaths,
+  ]);
+  const connected = summary.symbols.mostConnected
+    .map(buildSymbolCitation)
+    .filter((citation) => !alreadySeen.has(citation.path));
+  const guideFiles = buildKeyFileItems(summary)
+    .map((item) => buildPathCitation(item.path, item.reason))
+    .filter((citation) => !alreadySeen.has(citation.path));
+  const riskRelated =
+    [...connected, ...guideFiles].find((citation) =>
+      isRiskRelatedPath(citation.path),
+    ) ?? null;
+  const citation =
+    riskRelated ?? connected[0] ?? guideFiles[0] ?? connected[0] ?? null;
+
+  if (!citation) {
+    return {
+      citation: state.lastOpenedCitation ?? null,
+      reason:
+        "No untouched high-signal file remains in the current walkthrough path; revisit the last cited file or use Search for a focused follow-up.",
+    };
+  }
+
+  if (riskRelated?.path === citation.path) {
+    return {
+      citation,
+      reason:
+        "It looks risk-related or operationally important, so it is the best next verification target.",
+    };
+  }
+
+  if (connected.some((item) => item.path === citation.path)) {
+    return {
+      citation,
+      reason:
+        "It has strong code connections and can reveal how the inspected files are used elsewhere.",
+    };
+  }
+
+  return {
+    citation,
+    reason:
+      "It is still important in the Repository Guide and has not been inspected in this walkthrough.",
+  };
+}
+
+function buildWalkthroughHandoff(
+  summary: DocsSummaryResponse,
+  walkthrough: WalkthroughSummary,
+  state: WalkthroughState,
+  inspectedFilePaths: string[],
+  guidedInvestigation: GuidedInvestigation | null,
+): WalkthroughHandoff {
+  const completed = state.completedFiles.map((path) =>
+    getWalkthroughCitationByPath(summary, path),
+  );
+  const skipped = state.skippedFiles.map((path) =>
+    getWalkthroughCitationByPath(summary, path),
+  );
+  const touchedFromFiles = inspectedFilePaths
+    .filter(
+      (path) =>
+        !state.completedFiles.includes(path) && !state.skippedFiles.includes(path),
+    )
+    .map((path) => buildPathCitation(path, "Opened during repository investigation."));
+  const { citation: nextDeepDive, reason: nextDeepDiveReason } =
+    buildNextDeepDiveCitation(summary, state, inspectedFilePaths);
+  const findings = [
+    getBusinessPurpose(summary),
+    `Architecture path: ${describeRepositoryArchitecture(summary)}`,
+    ...(guidedInvestigation?.findings ?? []),
+    walkthrough.progressLabel,
+  ].slice(0, 5);
+  const risks = [
+    ...walkthrough.risks,
+    ...(skipped.length
+      ? [`${skipped.length} walkthrough file${skipped.length === 1 ? "" : "s"} skipped; revisit before treating onboarding as complete.`]
+      : []),
+    ...(walkthrough.remainingCount
+      ? [`${walkthrough.remainingCount} walkthrough file${walkthrough.remainingCount === 1 ? "" : "s"} still left in the reading order.`]
+      : []),
+  ].slice(0, 5);
+
+  return {
+    projectSummary: getBusinessPurpose(summary),
+    architecturePath: describeRepositoryArchitecture(summary),
+    inspected: dedupeCitations([...completed, ...touchedFromFiles]).slice(0, 8),
+    skipped: dedupeCitations(skipped).slice(0, 6),
+    findings,
+    risks,
+    nextDeepDive,
+    nextDeepDiveReason,
+  };
+}
+
+function buildWalkthroughHandoffResponse(handoff: WalkthroughHandoff): DevlensResponse {
+  const inspectedText = handoff.inspected.length
+    ? handoff.inspected.map((citation) => citation.path).join(", ")
+    : "No files marked done yet";
+  const skippedText = handoff.skipped.length
+    ? ` Skipped: ${handoff.skipped.map((citation) => citation.path).join(", ")}.`
+    : "";
+  const riskText = handoff.risks.length
+    ? ` Still unknown: ${handoff.risks.join(" ")}`
+    : " No major walkthrough risks are currently flagged.";
+  const nextText = handoff.nextDeepDive
+    ? ` Next deep dive: ${handoff.nextDeepDive.path} because ${handoff.nextDeepDiveReason}`
+    : " Next deep dive: use Search to choose a focused follow-up.";
+
+  return {
+    answer: `Onboarding handoff: ${handoff.projectSummary} Architecture path: ${handoff.architecturePath} Inspected: ${inspectedText}.${skippedText}${riskText}${nextText}`,
+    citations: dedupeCitations([
+      ...handoff.inspected.slice(0, 4),
+      ...handoff.skipped.slice(0, 2),
+      ...(handoff.nextDeepDive ? [handoff.nextDeepDive] : []),
+    ]).slice(0, 6),
+  };
+}
+
+function formatRecapCitation(citation: DevlensCitation): string {
+  return citation.startLine && citation.endLine
+    ? `${citation.path} (${formatCompactLineRange({
+        startLine: citation.startLine,
+        endLine: citation.endLine,
+      })})`
+    : citation.path;
+}
+
+function formatRecapList(values: string[], fallback: string): string {
+  return values.length ? values.map((value) => `- ${value}`).join("\n") : `- ${fallback}`;
+}
+
+function buildRepositoryRecapText(
+  summary: DocsSummaryResponse,
+  handoff: WalkthroughHandoff,
+  walkthrough: WalkthroughSummary,
+): string {
+  const repositoryName = `${summary.repository.owner}/${summary.repository.name}`;
+  const inspected = handoff.inspected.map(formatRecapCitation);
+  const skipped = handoff.skipped.map(formatRecapCitation);
+  const findings = handoff.findings.slice(0, 4);
+  const risks = handoff.risks.slice(0, 4);
+  const citedFiles = dedupeCitations([
+    ...handoff.inspected,
+    ...handoff.skipped,
+    ...(handoff.nextDeepDive ? [handoff.nextDeepDive] : []),
+  ]).map(formatRecapCitation);
+
+  return [
+    `# DevLens repository recap: ${repositoryName}`,
+    "",
+    `Purpose: ${handoff.projectSummary}`,
+    "",
+    `Architecture path: ${handoff.architecturePath}`,
+    "",
+    `Walkthrough progress: ${walkthrough.progressLabel}; ${walkthrough.remainingCount} remaining; ${walkthrough.skippedCount} skipped.`,
+    "",
+    "Inspected files:",
+    formatRecapList(inspected, "No files marked done yet."),
+    "",
+    "Skipped files:",
+    formatRecapList(skipped, "No skipped files."),
+    "",
+    "Important findings:",
+    formatRecapList(findings, "No findings captured yet."),
+    "",
+    "Risks / unknowns:",
+    formatRecapList(risks, "No major walkthrough risks are currently flagged."),
+    "",
+    "Recommended next deep dive:",
+    handoff.nextDeepDive
+      ? `- ${formatRecapCitation(handoff.nextDeepDive)}: ${handoff.nextDeepDiveReason}`
+      : "- Use repository search to choose a focused follow-up.",
+    "",
+    "Cited files:",
+    formatRecapList(citedFiles, "No cited files yet."),
+  ].join("\n");
+}
+
+function buildRepositoryRecapResponse(
+  summary: DocsSummaryResponse,
+  handoff: WalkthroughHandoff,
+  walkthrough: WalkthroughSummary,
+): DevlensResponse {
+  return {
+    answer: `Shareable recap ready for ${summary.repository.owner}/${summary.repository.name}. It covers purpose, architecture path, inspected files, skipped files, risks, next deep dive, and cited files. Use Copy recap in the handoff area to put the formatted notes on your clipboard.`,
+    citations: dedupeCitations([
+      ...handoff.inspected.slice(0, 4),
+      ...handoff.skipped.slice(0, 2),
+      ...(handoff.nextDeepDive ? [handoff.nextDeepDive] : []),
+    ]).slice(0, 6),
+  };
+}
+
+function buildWalkthroughStepResponse(
+  summary: DocsSummaryResponse,
+  walkthrough: WalkthroughSummary,
+  selectedNode: ExplorerNode | null,
+  selectedFileSymbols: RepositorySymbol[],
+  selectedFileSource: FileSourceResponse | null,
+): DevlensResponse {
+  if (walkthrough.isComplete) {
+    const inspected = walkthrough.path
+      .filter((citation) => walkthrough.completedCount || walkthrough.skippedCount)
+      .slice(0, 5);
+    const risks = walkthrough.risks.length
+      ? ` Key open questions: ${walkthrough.risks.join(" ")}`
+      : "";
+
+    return {
+      answer: `Walkthrough complete. ${getBusinessPurpose(
+        summary,
+      )} The main architecture path is: ${describeRepositoryArchitecture(
+        summary,
+      )} You reviewed ${walkthrough.completedCount} file${
+        walkthrough.completedCount === 1 ? "" : "s"
+      } and skipped ${walkthrough.skippedCount}. Recommended next deep dive: ${
+        summary.symbols.mostConnected[0]?.filePath ??
+        walkthrough.path[0]?.path ??
+        "Search important files"
+      }.${risks}`,
+      citations: dedupeCitations([
+        ...inspected,
+        ...summary.symbols.mostConnected.slice(0, 2).map(buildSymbolCitation),
+      ]).slice(0, 5),
+    };
+  }
+
+  const current = walkthrough.current;
+  if (!current) {
+    return {
+      answer:
+        "The Repository Guide does not have enough reading-order files yet. Use Search and the file tree to choose a first source anchor.",
+      citations: [],
+    };
+  }
+
+  const selectedMatchesCurrent =
+    selectedNode?.kind === "file" && selectedNode.path === current.path;
+  const fileMatter = selectedMatchesCurrent
+    ? buildFileMatterSummary(current.path, selectedFileSymbols)
+    : null;
+  const sourceSnippet = selectedMatchesCurrent
+    ? getFileSourceSnippet(selectedFileSource)
+    : "";
+  const evidenceItems = selectedMatchesCurrent
+    ? buildWalkthroughEvidenceItems({
+        summary,
+        current,
+        source: selectedFileSource,
+        symbols: selectedFileSymbols,
+        imports: extractImportsFromSnippet(sourceSnippet),
+        exports: extractExportsFromSnippet(sourceSnippet, selectedFileSymbols),
+        calls: buildCallNames(selectedFileSymbols),
+        relatedFiles: buildRelatedFileCandidates(
+          current.path,
+          selectedFileSymbols,
+          buildReadingOrderFallbackPaths(summary),
+        ),
+      })
+    : [];
+  const lookFor = fileMatter
+    ? `${fileMatter.purpose} ${fileMatter.whyRead}`
+    : `${current.path} is next because ${current.reason}. Look for the entry point, exported behavior, important configuration, and any nearby files it points toward.`;
+  const nextText = walkthrough.next
+    ? ` After this, continue to ${walkthrough.next.path} because ${walkthrough.next.reason}.`
+    : " This is the last file in the current walkthrough path.";
+
+  return {
+    answer: `Walkthrough step: open ${current.path}. ${lookFor} Evidence checklist: ${formatWalkthroughEvidenceForAnswer(
+      evidenceItems,
+    )}${nextText}`,
+    citations: dedupeCitations([
+      current,
+      ...evidenceItems.map((item) => item.citation),
+      ...(selectedMatchesCurrent
+        ? selectedFileSymbols.slice(0, 3).map(buildSymbolCitation)
+        : []),
+      ...(walkthrough.next ? [walkthrough.next] : []),
+    ]).slice(0, 5),
+  };
+}
+
+function buildWalkthroughProgressResponse(
+  summary: DocsSummaryResponse,
+  walkthrough: WalkthroughSummary,
+  state: WalkthroughState,
+): DevlensResponse {
+  if (walkthrough.isComplete) {
+    return buildWalkthroughStepResponse(summary, walkthrough, null, [], null);
+  }
+
+  const current = walkthrough.current;
+  const next = walkthrough.next;
+  const risks = walkthrough.risks.length
+    ? ` Watch-outs: ${walkthrough.risks.join(" ")}`
+    : "";
+
+  return {
+    answer: `Walkthrough progress: ${walkthrough.progressLabel}, ${
+      walkthrough.remainingCount
+    } remaining, ${walkthrough.skippedCount} skipped. Current file: ${
+      current?.path ?? "none"
+    }. Next file: ${next?.path ?? "none"}.${risks}`,
+    citations: dedupeCitations([
+      ...(current ? [current] : []),
+      ...(next ? [next] : []),
+      ...(state.lastOpenedCitation ? [state.lastOpenedCitation] : []),
+    ]),
   };
 }
 
@@ -1956,8 +2613,10 @@ function FileSourcePreview({
   isLoading,
   error,
   summary,
+  walkthroughCurrent,
   onExplainFile,
   onFindReferences,
+  onOpenCitation,
   onOpenPath,
   onOpenSymbol,
 }: {
@@ -1969,8 +2628,10 @@ function FileSourcePreview({
   isLoading: boolean;
   error: string | null;
   summary: DocsSummaryResponse | null;
+  walkthroughCurrent: DevlensCitation | null;
   onExplainFile: () => void;
   onFindReferences: () => void;
+  onOpenCitation: (citation: DevlensCitation) => void;
   onOpenPath: (path: string) => void;
   onOpenSymbol: (symbolId: string) => void;
 }) {
@@ -1993,7 +2654,11 @@ function FileSourcePreview({
   const exports = extractExportsFromSnippet(sourceSnippet, relatedSymbols);
   const calls = buildCallNames(relatedSymbols);
   const relatedFiles = selectedNode?.kind === "file"
-    ? buildRelatedFileCandidates(selectedNode.path, relatedSymbols)
+    ? buildRelatedFileCandidates(
+        selectedNode.path,
+        relatedSymbols,
+        buildReadingOrderFallbackPaths(summary),
+      )
     : [];
   const responsibilities = selectedNode?.kind === "file"
     ? buildFileResponsibilities(selectedNode.path, role, relatedSymbols)
@@ -2010,6 +2675,22 @@ function FileSourcePreview({
   const readingOrderMatch = selectedNode?.kind === "file"
     ? getReadingOrderMatch(summary, selectedNode.path)
     : null;
+  const activeWalkthroughCitation =
+    selectedNode?.kind === "file" && walkthroughCurrent?.path === selectedNode.path
+      ? walkthroughCurrent
+      : null;
+  const walkthroughEvidenceItems = activeWalkthroughCitation
+    ? buildWalkthroughEvidenceItems({
+        summary,
+        current: activeWalkthroughCitation,
+        source,
+        symbols: relatedSymbols,
+        imports,
+        exports,
+        calls,
+        relatedFiles,
+      })
+    : [];
   const normalizedFileSearch = fileSearchQuery.trim().toLowerCase();
   const fileSearchMatchCount = normalizedFileSearch
     ? source?.file.previewLines.filter((line) =>
@@ -2195,6 +2876,67 @@ function FileSourcePreview({
                   <li>Inspect the source and symbols to identify responsibilities.</li>
                 )}
               </ul>
+            </div>
+          </section>
+        ) : null}
+
+        {walkthroughEvidenceItems.length ? (
+          <section className="rounded-md border border-signal/20 bg-white p-4 shadow-sm">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-xs font-semibold uppercase tracking-wide text-signal">
+                  Walkthrough evidence
+                </p>
+                <p className="mt-1 text-sm font-semibold text-ink">
+                  What to verify before moving on
+                </p>
+              </div>
+              <span className="shrink-0 rounded bg-cloud px-2 py-1 text-[11px] font-semibold text-graphite">
+                {walkthroughEvidenceItems.length} checks
+              </span>
+            </div>
+            <div className="mt-3 grid gap-2 md:grid-cols-2">
+              {walkthroughEvidenceItems.map((item) => (
+                <button
+                  key={`${item.label}-${item.citation.path}-${item.citation.startLine ?? "file"}`}
+                  type="button"
+                  onClick={() => onOpenCitation(item.citation)}
+                  className="grid grid-cols-[20px_minmax(0,1fr)] gap-2 rounded-md border border-line bg-cloud/50 px-3 py-2 text-left transition-colors hover:border-signal hover:bg-white"
+                  title={`${item.citation.path} - ${item.citation.reason}`}
+                >
+                  <CheckCircle2
+                    size={14}
+                    className={`mt-0.5 shrink-0 ${
+                      item.priority === "high"
+                        ? "text-signal"
+                        : item.priority === "medium"
+                          ? "text-amber"
+                          : "text-graphite"
+                    }`}
+                  />
+                  <span className="min-w-0">
+                    <span className="flex min-w-0 items-center justify-between gap-2">
+                      <span className="truncate text-xs font-semibold uppercase tracking-wide text-graphite">
+                        {item.label}
+                      </span>
+                      {item.citation.startLine && item.citation.endLine ? (
+                        <span className="shrink-0 text-[11px] text-graphite">
+                          {formatCompactLineRange({
+                            startLine: item.citation.startLine,
+                            endLine: item.citation.endLine,
+                          })}
+                        </span>
+                      ) : null}
+                    </span>
+                    <span className="mt-1 line-clamp-2 text-sm leading-5 text-ink">
+                      {item.detail}
+                    </span>
+                    <span className="mt-1 block truncate text-[11px] text-graphite">
+                      {item.citation.path}
+                    </span>
+                  </span>
+                </button>
+              ))}
             </div>
           </section>
         ) : null}
@@ -3422,6 +4164,14 @@ export default function Home() {
     useState<DevlensResponse | null>(null);
   const [isAskingDevlens, setIsAskingDevlens] = useState(false);
   const [inspectedFilePaths, setInspectedFilePaths] = useState<string[]>([]);
+  const [walkthroughState, setWalkthroughState] = useState<WalkthroughState>({
+    activeStepPath: null,
+    completedFiles: [],
+    skippedFiles: [],
+    lastOpenedCitation: null,
+    isComplete: false,
+  });
+  const [recapCopyState, setRecapCopyState] = useState<"idle" | "copied">("idle");
   const [sidebarCopiedPath, setSidebarCopiedPath] = useState<string | null>(null);
 
   const repository = job?.repository;
@@ -3533,6 +4283,29 @@ export default function Home() {
       selectedFileSource,
       selectedFileSymbols,
       selectedNode,
+    ],
+  );
+  const walkthrough = useMemo(
+    () => buildWalkthroughSummary(docsSummary, walkthroughState),
+    [docsSummary, walkthroughState],
+  );
+  const walkthroughHandoff = useMemo(
+    () =>
+      docsSummary && walkthrough
+        ? buildWalkthroughHandoff(
+            docsSummary,
+            walkthrough,
+            walkthroughState,
+            inspectedFilePaths,
+            guidedInvestigation,
+          )
+        : null,
+    [
+      docsSummary,
+      guidedInvestigation,
+      inspectedFilePaths,
+      walkthrough,
+      walkthroughState,
     ],
   );
 
@@ -3812,6 +4585,13 @@ export default function Home() {
     setDevlensResponse(null);
     setIsAskingDevlens(false);
     setInspectedFilePaths([]);
+    setWalkthroughState({
+      activeStepPath: null,
+      completedFiles: [],
+      skippedFiles: [],
+      lastOpenedCitation: null,
+      isComplete: false,
+    });
     setIsSubmitting(true);
 
     try {
@@ -3969,6 +4749,10 @@ export default function Home() {
   }
 
   function openCitationInFiles(source: DevlensCitation) {
+    setWalkthroughState((current) => ({
+      ...current,
+      lastOpenedCitation: source,
+    }));
     focusSymbolFile(
       { filePath: source.path },
       source.startLine && source.endLine
@@ -3979,6 +4763,196 @@ export default function Home() {
         : undefined,
     );
     setActiveWorkspaceTab("files");
+  }
+
+  function startWalkthrough() {
+    if (!docsSummary) return;
+    const firstStep = getWalkthroughPath(docsSummary)[0] ?? null;
+    const nextState = {
+      activeStepPath: firstStep?.path ?? null,
+      completedFiles: [],
+      skippedFiles: [],
+      lastOpenedCitation: firstStep,
+      isComplete: false,
+    };
+    const nextSummary = buildWalkthroughSummary(docsSummary, nextState);
+    setWalkthroughState(nextState);
+    setDevlensPrompt("Start walkthrough");
+    setDevlensResponse(
+      nextSummary
+        ? buildWalkthroughStepResponse(
+            docsSummary,
+            nextSummary,
+            selectedNode,
+            selectedFileSymbols,
+            selectedFileSource,
+          )
+        : {
+            answer:
+              "The Repository Guide does not have a walkthrough path yet. Use Search and important files as the first anchors.",
+            citations: [],
+          },
+    );
+    if (firstStep) openCitationInFiles(firstStep);
+  }
+
+  function continueWalkthrough() {
+    if (!docsSummary) return;
+    const currentSummary = buildWalkthroughSummary(docsSummary, walkthroughState);
+    const target = currentSummary?.current ?? currentSummary?.next ?? null;
+    setDevlensPrompt("Continue walkthrough");
+    setDevlensResponse(
+      currentSummary
+        ? buildWalkthroughStepResponse(
+            docsSummary,
+            currentSummary,
+            selectedNode,
+            selectedFileSymbols,
+            selectedFileSource,
+          )
+        : {
+            answer:
+              "The Repository Guide does not have a walkthrough path yet. Use Search and important files as the first anchors.",
+            citations: [],
+          },
+    );
+    if (target) openCitationInFiles(target);
+  }
+
+  function finishWalkthrough() {
+    if (!docsSummary || !walkthrough) return;
+    const handoff = buildWalkthroughHandoff(
+      docsSummary,
+      walkthrough,
+      {
+        ...walkthroughState,
+        isComplete: true,
+      },
+      inspectedFilePaths,
+      guidedInvestigation,
+    );
+
+    setWalkthroughState((current) => ({
+      ...current,
+      activeStepPath: null,
+      isComplete: true,
+    }));
+    setDevlensPrompt("Give me onboarding handoff notes");
+    setDevlensResponse(buildWalkthroughHandoffResponse(handoff));
+  }
+
+  async function copyRepositoryRecap() {
+    if (!docsSummary || !walkthroughHandoff || !walkthrough) return;
+
+    await navigator.clipboard.writeText(
+      buildRepositoryRecapText(docsSummary, walkthroughHandoff, walkthrough),
+    );
+    setRecapCopyState("copied");
+    window.setTimeout(() => setRecapCopyState("idle"), 1600);
+  }
+
+  function markWalkthroughFileDone() {
+    if (!docsSummary || !walkthrough?.current) return;
+    const currentPath = walkthrough.current.path;
+    const path = getWalkthroughPath(docsSummary);
+    const currentIndex = path.findIndex((citation) => citation.path === currentPath);
+    const completed = [...new Set([...walkthroughState.completedFiles, currentPath])];
+    const skipped = walkthroughState.skippedFiles.filter((path) => path !== currentPath);
+    const next =
+      path
+        .slice(Math.max(currentIndex + 1, 0))
+        .find(
+          (citation) =>
+            !completed.includes(citation.path) && !skipped.includes(citation.path),
+        ) ?? null;
+
+    const nextState = {
+      activeStepPath: next?.path ?? null,
+      completedFiles: completed,
+      skippedFiles: skipped,
+      lastOpenedCitation: next ?? walkthrough.current,
+      isComplete: !next,
+    };
+    const nextSummary = buildWalkthroughSummary(docsSummary, nextState);
+    setWalkthroughState(nextState);
+    setDevlensPrompt(next ? "Continue walkthrough" : "Summarize walkthrough progress");
+    setDevlensResponse(
+      nextSummary
+        ? next
+          ? buildWalkthroughStepResponse(
+              docsSummary,
+              nextSummary,
+              selectedNode,
+              selectedFileSymbols,
+              selectedFileSource,
+            )
+          : buildWalkthroughHandoffResponse(
+              buildWalkthroughHandoff(
+                docsSummary,
+                nextSummary,
+                nextState,
+                inspectedFilePaths,
+                guidedInvestigation,
+              ),
+            )
+        : {
+            answer: "Walkthrough progress is not available yet.",
+            citations: [],
+          },
+    );
+    if (next) openCitationInFiles(next);
+  }
+
+  function skipWalkthroughFile() {
+    if (!docsSummary || !walkthrough?.current) return;
+    const currentPath = walkthrough.current.path;
+    const path = getWalkthroughPath(docsSummary);
+    const currentIndex = path.findIndex((citation) => citation.path === currentPath);
+    const skipped = [...new Set([...walkthroughState.skippedFiles, currentPath])];
+    const completed = walkthroughState.completedFiles.filter((path) => path !== currentPath);
+    const next =
+      path
+        .slice(Math.max(currentIndex + 1, 0))
+        .find(
+          (citation) =>
+            !completed.includes(citation.path) && !skipped.includes(citation.path),
+        ) ?? null;
+
+    const nextState = {
+      activeStepPath: next?.path ?? null,
+      completedFiles: completed,
+      skippedFiles: skipped,
+      lastOpenedCitation: next ?? walkthrough.current,
+      isComplete: !next,
+    };
+    const nextSummary = buildWalkthroughSummary(docsSummary, nextState);
+    setWalkthroughState(nextState);
+    setDevlensPrompt(next ? "Continue walkthrough" : "Summarize walkthrough progress");
+    setDevlensResponse(
+      nextSummary
+        ? next
+          ? buildWalkthroughStepResponse(
+              docsSummary,
+              nextSummary,
+              selectedNode,
+              selectedFileSymbols,
+              selectedFileSource,
+            )
+          : buildWalkthroughHandoffResponse(
+              buildWalkthroughHandoff(
+                docsSummary,
+                nextSummary,
+                nextState,
+                inspectedFilePaths,
+                guidedInvestigation,
+              ),
+            )
+        : {
+            answer: "Walkthrough progress is not available yet.",
+            citations: [],
+          },
+    );
+    if (next) openCitationInFiles(next);
   }
 
   function explainSelectedFile() {
@@ -4046,6 +5020,84 @@ export default function Home() {
         : null;
     const selectedFileRole =
       selectedNode?.kind === "file" ? getFileRoleLabel(selectedNode.path) : null;
+    const walkthroughSummary = buildWalkthroughSummary(docsSummary, walkthroughState);
+
+    if (/walkthrough|handoff|recap|export|shareable|onboarding notes|teammate|what did i learn|what is still unknown|after this walkthrough|why am i reading|what should i look for|what depends|what should i verify|safe to skip|show evidence|mark this file done|skip this file|summarize walkthrough progress/i.test(prompt)) {
+      if (!walkthroughSummary) {
+        return {
+          answer:
+            "The Repository Guide does not have a walkthrough path yet. Use important files and Search as the first onboarding anchors.",
+          citations: [],
+        };
+      }
+
+      if (walkthroughSummary.isComplete) {
+        return buildWalkthroughHandoffResponse(
+          buildWalkthroughHandoff(
+            docsSummary,
+            walkthroughSummary,
+            walkthroughState,
+            inspectedFilePaths,
+            guidedInvestigation,
+          ),
+        );
+      }
+
+      if (/copy recap|export handoff|shareable recap|make onboarding notes|summarize this for a teammate|create handoff notes/i.test(prompt)) {
+        return buildRepositoryRecapResponse(
+          docsSummary,
+          buildWalkthroughHandoff(
+            docsSummary,
+            walkthroughSummary,
+            walkthroughState,
+            inspectedFilePaths,
+            guidedInvestigation,
+          ),
+          walkthroughSummary,
+        );
+      }
+
+      if (/finish walkthrough|handoff|what did i learn|what is still unknown|after this walkthrough|give me onboarding/i.test(prompt)) {
+        return buildWalkthroughHandoffResponse(
+          buildWalkthroughHandoff(
+            docsSummary,
+            walkthroughSummary,
+            walkthroughState,
+            inspectedFilePaths,
+            guidedInvestigation,
+          ),
+        );
+      }
+
+      if (/summarize walkthrough progress|progress/i.test(prompt)) {
+        if (walkthroughSummary.isComplete) {
+          return buildWalkthroughHandoffResponse(
+            buildWalkthroughHandoff(
+              docsSummary,
+              walkthroughSummary,
+              walkthroughState,
+              inspectedFilePaths,
+              guidedInvestigation,
+            ),
+          );
+        }
+        return buildWalkthroughProgressResponse(
+          docsSummary,
+          walkthroughSummary,
+          walkthroughState,
+        );
+      }
+
+      if (/why am i reading|what should i look for|what depends|what should i verify|safe to skip|show evidence|continue walkthrough|start walkthrough|mark this file done|skip this file/i.test(prompt)) {
+        return buildWalkthroughStepResponse(
+          docsSummary,
+          walkthroughSummary,
+          selectedNode,
+          selectedFileSymbols,
+          selectedFileSource,
+        );
+      }
+    }
 
     if (/start|onboard|first/i.test(prompt)) {
       const citations = readingOrder.length
@@ -4232,6 +5284,11 @@ export default function Home() {
       return "service handler controller business logic";
     }
     if (/next|follow.?up|inspect next|what now/i.test(prompt)) {
+      return selectedNode?.kind === "file"
+        ? selectedNode.name.replace(/\.[^.]+$/, "")
+        : null;
+    }
+    if (/walkthrough|handoff|recap|export|shareable|onboarding notes|teammate|what did i learn|what is still unknown|after this walkthrough|why am i reading|what should i look for|what depends|what should i verify|safe to skip|show evidence/i.test(prompt)) {
       return selectedNode?.kind === "file"
         ? selectedNode.name.replace(/\.[^.]+$/, "")
         : null;
@@ -4656,8 +5713,10 @@ export default function Home() {
                     isLoading={isLoadingFileSource}
                     error={fileSourceError}
                     summary={docsSummary}
+                    walkthroughCurrent={walkthrough?.current ?? null}
                     onExplainFile={explainSelectedFile}
                     onFindReferences={findSelectedFileReferences}
+                    onOpenCitation={openCitationInFiles}
                     onOpenPath={openPathInFiles}
                     onOpenSymbol={inspectSymbol}
                   />
@@ -5132,9 +6191,22 @@ export default function Home() {
 
           <div className="mt-2 flex flex-wrap gap-2">
             {[
+              "Start walkthrough",
+              "Continue walkthrough",
               "Where should I start?",
               "Explain this repository",
               "Explain selected file",
+              "Why am I reading this file?",
+              "What should I look for here?",
+              "What depends on this file?",
+              "What should I verify before moving on?",
+              "Show evidence for this step",
+              "Summarize walkthrough progress",
+              "Give me onboarding handoff notes",
+              "Copy recap",
+              "Summarize this for a teammate",
+              "What did I learn?",
+              "What is still unknown?",
               "What should I inspect next?",
               "What are the most important files?",
               "Show request flow",
@@ -5166,13 +6238,231 @@ export default function Home() {
                 </div>
                 <button
                   type="button"
-                  onClick={() => void askDevlens("Where should I start?")}
+                  onClick={startWalkthrough}
                   disabled={isAskingDevlens}
                   className="shrink-0 rounded-md border border-line bg-white px-2 py-1 text-xs font-medium text-graphite hover:border-signal hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  Start tour
+                  Start walkthrough
                 </button>
               </div>
+
+              {walkthrough ? (
+                <div className="mt-3 rounded-md border border-line bg-white p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-graphite">
+                        Walkthrough progress
+                      </p>
+                      <p className="mt-1 text-sm font-semibold leading-5 text-ink">
+                        {walkthrough.isComplete
+                          ? "Walkthrough complete"
+                          : walkthrough.current?.path ?? "Choose a starting file"}
+                      </p>
+                    </div>
+                    <span className="shrink-0 rounded bg-cloud px-2 py-1 text-[11px] font-semibold text-graphite">
+                      {walkthrough.progressLabel}
+                    </span>
+                  </div>
+
+                  <div className="mt-3 grid grid-cols-3 gap-2 text-center">
+                    <div className="rounded bg-cloud px-2 py-1.5">
+                      <p className="text-sm font-semibold text-ink">
+                        {walkthrough.completedCount}
+                      </p>
+                      <p className="text-[11px] text-graphite">Done</p>
+                    </div>
+                    <div className="rounded bg-cloud px-2 py-1.5">
+                      <p className="text-sm font-semibold text-ink">
+                        {walkthrough.remainingCount}
+                      </p>
+                      <p className="text-[11px] text-graphite">Left</p>
+                    </div>
+                    <div className="rounded bg-cloud px-2 py-1.5">
+                      <p className="text-sm font-semibold text-ink">
+                        {walkthrough.skippedCount}
+                      </p>
+                      <p className="text-[11px] text-graphite">Skipped</p>
+                    </div>
+                  </div>
+
+                  {walkthrough.current ? (
+                    <button
+                      type="button"
+                      onClick={() => openCitationInFiles(walkthrough.current!)}
+                      className="mt-3 block max-w-full truncate text-left text-xs font-semibold text-signal hover:text-ink"
+                      title={`${walkthrough.current.path} - ${walkthrough.current.reason}`}
+                    >
+                      Open current: {walkthrough.current.path}
+                    </button>
+                  ) : null}
+                  <p className="mt-2 line-clamp-2 text-xs leading-5 text-graphite">
+                    {walkthrough.isComplete
+                      ? "Review the completion summary, then choose the next deep dive from the cited files."
+                      : walkthrough.current?.reason ?? "Start the walkthrough from the Repository Guide reading order."}
+                  </p>
+                  <p className="mt-1 truncate text-[11px] text-graphite">
+                    Next: {walkthrough.next?.path ?? "No remaining file"}
+                  </p>
+
+                  <div className="mt-3 flex flex-wrap gap-1.5">
+                    <button
+                      type="button"
+                      onClick={walkthrough.completedCount || walkthrough.skippedCount ? continueWalkthrough : startWalkthrough}
+                      disabled={isAskingDevlens || walkthrough.isComplete}
+                      className="rounded-md bg-ink px-2 py-1 text-xs font-semibold text-white hover:bg-graphite disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {walkthrough.completedCount || walkthrough.skippedCount
+                        ? "Continue"
+                        : "Start"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={markWalkthroughFileDone}
+                      disabled={isAskingDevlens || walkthrough.isComplete || !walkthrough.current}
+                      className="rounded-md border border-line bg-white px-2 py-1 text-xs font-medium text-graphite hover:border-signal hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      Mark done
+                    </button>
+                    <button
+                      type="button"
+                      onClick={skipWalkthroughFile}
+                      disabled={isAskingDevlens || walkthrough.isComplete || !walkthrough.current}
+                      className="rounded-md border border-line bg-white px-2 py-1 text-xs font-medium text-graphite hover:border-signal hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      Skip
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void askDevlens("Summarize walkthrough progress")}
+                      disabled={isAskingDevlens}
+                      className="rounded-md border border-line bg-white px-2 py-1 text-xs font-medium text-graphite hover:border-signal hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      Summary
+                    </button>
+                    <button
+                      type="button"
+                      onClick={finishWalkthrough}
+                      disabled={isAskingDevlens || !walkthrough}
+                      className="rounded-md border border-line bg-white px-2 py-1 text-xs font-medium text-graphite hover:border-signal hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      Finish
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void copyRepositoryRecap()}
+                      disabled={!walkthroughHandoff || !docsSummary}
+                      className="rounded-md border border-line bg-white px-2 py-1 text-xs font-medium text-graphite hover:border-signal hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {recapCopyState === "copied" ? "Copied" : "Copy recap"}
+                    </button>
+                  </div>
+
+                  {walkthrough.risks.length ? (
+                    <p className="mt-2 line-clamp-2 text-[11px] leading-4 text-graphite">
+                      Watch: {walkthrough.risks[0]}
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
+
+              {walkthrough?.isComplete && walkthroughHandoff ? (
+                <div className="mt-3 rounded-md border border-mint/20 bg-white p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-mint">
+                        Onboarding handoff
+                      </p>
+                      <p className="mt-1 line-clamp-2 text-sm font-semibold leading-5 text-ink">
+                        {walkthroughHandoff.projectSummary}
+                      </p>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void copyRepositoryRecap()}
+                        className="rounded-md border border-line bg-white px-2 py-1 text-xs font-medium text-graphite hover:border-signal hover:text-ink"
+                      >
+                        {recapCopyState === "copied" ? "Copied" : "Copy recap"}
+                      </button>
+                      <CheckCircle2 size={16} className="text-mint" />
+                    </div>
+                  </div>
+
+                  <div className="mt-3 grid gap-2">
+                    <div>
+                      <p className="text-[11px] font-semibold uppercase tracking-wide text-graphite">
+                        Inspected
+                      </p>
+                      <div className="mt-1 flex flex-wrap gap-1">
+                        {walkthroughHandoff.inspected.length ? (
+                          walkthroughHandoff.inspected.slice(0, 4).map((citation) => (
+                            <button
+                              key={`${citation.path}-${citation.startLine ?? "file"}`}
+                              type="button"
+                              onClick={() => openCitationInFiles(citation)}
+                              className="max-w-full truncate rounded bg-cloud px-2 py-1 text-[11px] font-medium text-graphite hover:text-signal"
+                              title={citation.reason}
+                            >
+                              {citation.path}
+                            </button>
+                          ))
+                        ) : (
+                          <span className="text-xs text-graphite">
+                            No files marked done yet
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {walkthroughHandoff.skipped.length ? (
+                      <div>
+                        <p className="text-[11px] font-semibold uppercase tracking-wide text-graphite">
+                          Skipped
+                        </p>
+                        <div className="mt-1 flex flex-wrap gap-1">
+                          {walkthroughHandoff.skipped.slice(0, 3).map((citation) => (
+                            <button
+                              key={`${citation.path}-${citation.startLine ?? "file"}`}
+                              type="button"
+                              onClick={() => openCitationInFiles(citation)}
+                              className="max-w-full truncate rounded bg-amber/10 px-2 py-1 text-[11px] font-medium text-amber hover:text-ink"
+                              title={citation.reason}
+                            >
+                              {citation.path}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+
+                    <div>
+                      <p className="text-[11px] font-semibold uppercase tracking-wide text-graphite">
+                        Still unknown
+                      </p>
+                      <p className="mt-1 line-clamp-2 text-xs leading-5 text-graphite">
+                        {walkthroughHandoff.risks[0] ??
+                          "No major walkthrough risks are currently flagged."}
+                      </p>
+                    </div>
+
+                    {walkthroughHandoff.nextDeepDive ? (
+                      <button
+                        type="button"
+                        onClick={() => openCitationInFiles(walkthroughHandoff.nextDeepDive!)}
+                        className="rounded-md border border-line bg-cloud px-2 py-1.5 text-left text-xs hover:border-signal hover:bg-white"
+                        title={walkthroughHandoff.nextDeepDiveReason}
+                      >
+                        <span className="block font-semibold text-ink">
+                          Next deep dive
+                        </span>
+                        <span className="mt-0.5 block truncate text-graphite">
+                          {walkthroughHandoff.nextDeepDive.path}
+                        </span>
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
 
               {guidedInvestigation.bestNextFile ? (
                 <div className="mt-3 rounded-md border border-line bg-white p-3">
