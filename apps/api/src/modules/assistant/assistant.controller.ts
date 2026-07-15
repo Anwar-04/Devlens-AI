@@ -167,7 +167,7 @@ export class AssistantController {
       [
         "[DevLens] Chat request completed",
         `requestId=${requestId}`,
-        `mode=${answer.mode}`,
+        `mode=${answer.providerMetadata?.mode ?? answer.mode}`,
         answer.providerMetadata?.model ? `model=${answer.providerMetadata.model}` : "",
       ]
         .filter(Boolean)

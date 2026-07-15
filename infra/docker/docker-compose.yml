@@ -60,10 +60,11 @@
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4.1-mini}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
-      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.5-flash}
-      GEMINI_FALLBACK_MODEL: ${GEMINI_FALLBACK_MODEL:-gemini-3.1-flash-lite}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.1-flash-lite}
+      GEMINI_FALLBACK_MODEL: ${GEMINI_FALLBACK_MODEL:-gemini-3-flash}
+      GEMINI_HIGH_QUALITY_MODEL: ${GEMINI_HIGH_QUALITY_MODEL:-gemini-3.5-flash}
+      GEMINI_MODEL_CHAIN: ${GEMINI_MODEL_CHAIN:-gemini-3.1-flash-lite,gemini-3-flash,gemini-3.5-flash}
       GEMINI_MAX_ATTEMPTS: ${GEMINI_MAX_ATTEMPTS:-3}
-      GEMINI_FALLBACK_MAX_ATTEMPTS: ${GEMINI_FALLBACK_MAX_ATTEMPTS:-2}
     depends_on:
       postgres:
         condition: service_healthy

@@ -8,6 +8,7 @@ import {
   Post,
   Query
 } from "@nestjs/common";
+import { randomUUID } from "node:crypto";
 import { db } from "@devlens/database";
 import {
   AssistantCitation,
@@ -406,6 +407,7 @@ export function normalizeSignalText(value: string): string {
     .replace(/<img\b[^>]*\balt=["']([^"']+)["'][^>]*>/gi, " $1 ")
     .replace(/<img\b[^>]*>/gi, " ")
     .replace(/<[^>]+>/g, " ")
+    .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, " ")
     .replace(/\[([^\]]+)]\([^)]*\)/g, "$1")
     .replace(/&amp;/g, "&")
     .replace(/&lt;/g, "<")
@@ -413,6 +415,14 @@ export function normalizeSignalText(value: string): string {
     .replace(/&quot;/g, "\"")
     .replace(/&#39;/g, "'")
     .replace(/[`*_>#]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export function cleanGuideSummaryText(value: string): string {
+  return normalizeSignalText(value)
+    .replace(/\b(ultimate|powerhouse|awesome|amazing|beautiful|modern)\b/gi, "")
+    .replace(/\s+([,.;:!?])/g, "$1")
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -813,13 +823,13 @@ export function buildRepositoryUnderstanding(
         )} ${framework} for ${domain.toLowerCase()}. ${purpose}${featureSentence}${databaseSentence} ${architecture}`;
 
   return {
-    purpose,
+    purpose: cleanGuideSummaryText(purpose),
     domain,
     coreFeatures: features,
     architecture,
     mainModules: modules,
     readingOrder,
-    summary
+    summary: cleanGuideSummaryText(summary)
   };
 }
 
@@ -864,6 +874,31 @@ function buildGuideEnhancementContext(
   };
 }
 
+function buildVerifiedGuideCitations(understanding: RepositoryUnderstanding): AssistantCitation[] {
+  return understanding.readingOrder.slice(0, 5).map((item) => ({
+    path: item.file,
+    label: item.file,
+    reason: item.reason
+  }));
+}
+
+function stripWeakCitationNotice(value: string): string {
+  return value
+    .replace(
+      /\s*I could not verify the exact source references returned with this answer, so the citations below are the closest verified repository anchors\.\s*$/i,
+      ""
+    )
+    .trim();
+}
+
+function hasUsableGuideSummary(value: string, understanding: RepositoryUnderstanding) {
+  const cleaned = cleanGuideSummaryText(stripWeakCitationNotice(value));
+  if (cleaned.length < 50) return false;
+  if (/invented|no usable files/i.test(cleaned)) return false;
+  if (!understanding.readingOrder.length) return false;
+  return true;
+}
+
 export function buildGuideEnhanceResponse({
   repositoryId,
   understanding,
@@ -873,19 +908,41 @@ export function buildGuideEnhanceResponse({
   understanding: RepositoryUnderstanding;
   answer: Awaited<ReturnType<typeof createAssistantAnswer>>;
 }): GuideEnhanceResponse {
-  const canUseProviderSummary = answer.mode === "provider" && answer.citations.length > 0;
+  const knownGuidePaths = new Set(understanding.readingOrder.map((item) => item.file));
+  const safeAnswerCitations = answer.citations.filter((citation) =>
+    knownGuidePaths.has(citation.path)
+  );
+  const hasVerifiedAnswerCitations = safeAnswerCitations.length > 0;
+  const canUseProviderSummary =
+    answer.mode === "provider" &&
+    hasVerifiedAnswerCitations &&
+    hasUsableGuideSummary(answer.answer, understanding);
+  const canRepairProviderSummary =
+    (answer.mode === "provider" || answer.fallbackReason === "weak_citations") &&
+    hasUsableGuideSummary(answer.answer, understanding);
+  const repairedCitations = buildVerifiedGuideCitations(understanding);
+  const useEnhancedSummary = canUseProviderSummary || canRepairProviderSummary;
+  const summary = useEnhancedSummary
+    ? cleanGuideSummaryText(stripWeakCitationNotice(answer.answer))
+    : understanding.summary;
 
   return {
     repositoryId,
-    summary: canUseProviderSummary ? answer.answer : understanding.summary,
+    summary,
     purpose: understanding.purpose,
     domain: understanding.domain,
     coreFeatures: understanding.coreFeatures,
     architecture: understanding.architecture,
     readingOrder: understanding.readingOrder,
-    citations: answer.citations,
-    mode: canUseProviderSummary ? "provider" : "fallback",
-    fallbackReason: canUseProviderSummary
+    citations: canUseProviderSummary
+      ? safeAnswerCitations
+      : canRepairProviderSummary
+        ? safeAnswerCitations.length
+          ? safeAnswerCitations
+          : repairedCitations
+        : safeAnswerCitations,
+    mode: useEnhancedSummary ? "provider" : "fallback",
+    fallbackReason: useEnhancedSummary
       ? undefined
       : answer.fallbackReason ?? "weak_citations"
   };
@@ -1668,23 +1725,45 @@ export class RepositoriesController {
 
   @Post(":id/guide/enhance")
   async enhanceGuide(@Param("id") id: string): Promise<GuideEnhanceResponse> {
+    const requestId = `guide_${randomUUID()}`;
     const context = await loadDocsContext(id);
     const assistantContext = buildGuideEnhancementContext(context);
+    console.info(`[DevLens] Guide enhancement started requestId=${requestId} repositoryId=${id}`);
     const answer = await createAssistantAnswer(
       [
         "Improve the Repository Guide summary for this repository.",
+        "Return compact JSON with keys answer and citations.",
         "Use only the supplied repository facts and cited files.",
-        "Write one concise paragraph that names the real product/domain, main capabilities, architecture shape, and uncertainty if evidence is weak.",
+        "Citations must use exact path values copied from the allowed citations list.",
+        "Write one concise engineering paragraph that names the real product or domain, main capabilities, architecture shape, main technologies, and what a new developer should inspect first.",
+        "Avoid README marketing slogans, emojis, and hype wording.",
+        "State uncertainty briefly if evidence is weak.",
         "Do not invent file paths."
       ].join(" "),
-      assistantContext
+      assistantContext,
+      { requestId }
     );
-
-    return buildGuideEnhanceResponse({
+    const response = buildGuideEnhanceResponse({
       repositoryId: id,
       understanding: context.understanding,
       answer
     });
+
+    console.info(
+      [
+        "[DevLens] Guide enhancement completed",
+        `requestId=${requestId}`,
+        `repositoryId=${id}`,
+        `mode=${answer.providerMetadata?.mode ?? response.mode}`,
+        answer.providerMetadata?.model ? `model=${answer.providerMetadata.model}` : "",
+        `citationCount=${response.citations.length}`,
+        response.fallbackReason ? `fallbackReason=${response.fallbackReason}` : ""
+      ]
+        .filter(Boolean)
+        .join(" ")
+    );
+
+    return response;
   }
 
   @Post(":id/docs/readme-draft")

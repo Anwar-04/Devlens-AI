@@ -52,10 +52,11 @@ Optional provider configuration:
 - `OPENAI_API_KEY`: enables enhanced assistant answers through OpenAI.
 - `OPENAI_MODEL`: optional model override, defaults to `gpt-4.1-mini`.
 - `GEMINI_API_KEY`: enables enhanced assistant answers through Gemini.
-- `GEMINI_MODEL`: optional model override, defaults to `gemini-3.5-flash` in the local helper.
-- `GEMINI_FALLBACK_MODEL`: optional fallback for temporary provider capacity failures, defaults to `gemini-3.1-flash-lite`.
-- `GEMINI_MAX_ATTEMPTS`: optional primary Gemini attempt count, defaults to `3`.
-- `GEMINI_FALLBACK_MAX_ATTEMPTS`: optional fallback Gemini attempt count, defaults to `2`.
+- `GEMINI_MODEL`: optional model override, defaults to `gemini-3.1-flash-lite` in the local helper.
+- `GEMINI_FALLBACK_MODEL`: optional fallback model, defaults to `gemini-3-flash`.
+- `GEMINI_HIGH_QUALITY_MODEL`: optional higher-quality model, defaults to `gemini-3.5-flash`.
+- `GEMINI_MODEL_CHAIN`: optional ordered Gemini model list, defaults to `gemini-3.1-flash-lite,gemini-3-flash,gemini-3.5-flash`.
+- `GEMINI_MAX_ATTEMPTS`: optional Gemini attempt count per model for temporary provider errors, defaults to `3`.
 - `GITHUB_TOKEN`: optional backend-only token for analyzing private GitHub repositories. Public repositories do not require it.
 - `REPOSITORY_V1_MAX_ANALYZED_FILES`: optional V1 file cap for large repositories, defaults to `1200`.
 - `REPOSITORY_V1_MAX_SYMBOLS`: optional V1 code-detail cap for large repositories, defaults to `3000`.
@@ -69,8 +70,10 @@ For the local Gemini helper, set the key in your shell before starting the API:
 
 ```powershell
 $env:GEMINI_API_KEY="<your-gemini-api-key>"
-$env:GEMINI_MODEL="gemini-3.5-flash"
-$env:GEMINI_FALLBACK_MODEL="gemini-3.1-flash-lite"
+$env:GEMINI_MODEL="gemini-3.1-flash-lite"
+$env:GEMINI_FALLBACK_MODEL="gemini-3-flash"
+$env:GEMINI_HIGH_QUALITY_MODEL="gemini-3.5-flash"
+$env:GEMINI_MODEL_CHAIN="gemini-3.1-flash-lite,gemini-3-flash,gemini-3.5-flash"
 .\apps\api\run-live-api.cmd
 ```
 

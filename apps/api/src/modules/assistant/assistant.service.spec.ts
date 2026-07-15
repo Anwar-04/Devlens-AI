@@ -142,6 +142,13 @@ const geminiSuccessPayload = {
   ],
 };
 
+const geminiDailyQuotaPayload = {
+  error: {
+    message:
+      "Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-test",
+  },
+};
+
 describe("assistant service", () => {
   it("falls back cleanly when credentials are missing", async () => {
     const answer = await createAssistantAnswer("Explain this repository", baseContext, {
@@ -377,7 +384,7 @@ describe("assistant service", () => {
       mode: "fallback",
       fallbackReason: "provider_error",
     });
-    expect(gemini.calls).toHaveLength(5);
+    expect(gemini.calls).toHaveLength(6);
     expect(infoSpy).toHaveBeenCalledWith(expect.stringContaining("attempt=3/3"));
     expect(infoSpy).toHaveBeenCalledWith(
       expect.stringContaining("model=gemini-3.1-flash-lite"),
@@ -428,14 +435,99 @@ describe("assistant service", () => {
       requestId: "chat_test",
       attempts: 1,
       usedFallbackModel: true,
+      mode: "provider-fallback",
     });
     expect(gemini.calls).toHaveLength(4);
     expect(gemini.calls[0]?.url).toContain("/models/gemini-3.5-flash:generateContent");
     expect(gemini.calls[3]?.url).toContain("/models/gemini-3.1-flash-lite:generateContent");
     expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining("fallbackModel=gemini-3.1-flash-lite"),
+      expect.stringContaining("Switching Gemini model requestId=chat_test from=gemini-3.5-flash to=gemini-3.1-flash-lite"),
     );
     warnSpy.mockRestore();
+  });
+
+  it("switches models immediately when a Gemini daily quota is exhausted", async () => {
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => undefined);
+    const gemini = captureFetchSequence([
+      { ok: false, status: 429, payload: geminiDailyQuotaPayload },
+      { ok: true, status: 200, payload: geminiSuccessPayload },
+    ]);
+
+    const answer = await createAssistantAnswer("Find authentication", baseContext, {
+      provider: "gemini",
+      apiKey: "test-key",
+      model: "gemini-3.5-flash",
+      modelChain: ["gemini-3.5-flash", "gemini-3.1-flash-lite"],
+      fetchImpl: gemini.fetchImpl,
+      retryBaseDelayMs: 0,
+      retryJitterMs: 0,
+      requestId: "chat_quota",
+    });
+
+    expect(answer.mode).toBe("provider");
+    expect(answer.providerMetadata).toMatchObject({
+      model: "gemini-3.1-flash-lite",
+      mode: "provider-fallback",
+      usedFallbackModel: true,
+    });
+    expect(gemini.calls).toHaveLength(2);
+    expect(gemini.calls[0]?.url).toContain("/models/gemini-3.5-flash:generateContent");
+    expect(gemini.calls[1]?.url).toContain("/models/gemini-3.1-flash-lite:generateContent");
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("Gemini quota exhausted requestId=chat_quota model=gemini-3.5-flash"),
+    );
+    warnSpy.mockRestore();
+  });
+
+  it("uses the third Gemini model when the first two exhaust daily quota", async () => {
+    const gemini = captureFetchSequence([
+      { ok: false, status: 429, payload: geminiDailyQuotaPayload },
+      { ok: false, status: 429, payload: geminiDailyQuotaPayload },
+      { ok: true, status: 200, payload: geminiSuccessPayload },
+    ]);
+
+    const answer = await createAssistantAnswer("Find authentication", baseContext, {
+      provider: "gemini",
+      apiKey: "test-key",
+      modelChain: ["gemini-3.5-flash", "gemini-3-flash", "gemini-3.1-flash-lite"],
+      fetchImpl: gemini.fetchImpl,
+      retryBaseDelayMs: 0,
+      retryJitterMs: 0,
+    });
+
+    expect(answer.mode).toBe("provider");
+    expect(answer.providerMetadata?.model).toBe("gemini-3.1-flash-lite");
+    expect(answer.providerMetadata?.mode).toBe("provider-fallback");
+    expect(gemini.calls).toHaveLength(3);
+    expect(gemini.calls[0]?.url).toContain("/models/gemini-3.5-flash:generateContent");
+    expect(gemini.calls[1]?.url).toContain("/models/gemini-3-flash:generateContent");
+    expect(gemini.calls[2]?.url).toContain("/models/gemini-3.1-flash-lite:generateContent");
+  });
+
+  it("reports local fallback with no model when every Gemini model is exhausted", async () => {
+    const gemini = captureFetchSequence([
+      { ok: false, status: 429, payload: geminiDailyQuotaPayload },
+      { ok: false, status: 429, payload: geminiDailyQuotaPayload },
+      { ok: false, status: 429, payload: geminiDailyQuotaPayload },
+    ]);
+
+    const answer = await createAssistantAnswer("Find authentication", baseContext, {
+      provider: "gemini",
+      apiKey: "test-key",
+      modelChain: ["gemini-3.5-flash", "gemini-3-flash", "gemini-3.1-flash-lite"],
+      fetchImpl: gemini.fetchImpl,
+      retryBaseDelayMs: 0,
+      retryJitterMs: 0,
+    });
+
+    expect(answer.mode).toBe("fallback");
+    expect(answer.fallbackReason).toBe("provider_error");
+    expect(answer.providerMetadata).toMatchObject({
+      provider: "gemini",
+      model: "none",
+      mode: "local-fallback",
+    });
+    expect(gemini.calls).toHaveLength(3);
   });
 
   it("does not retry non-retryable Gemini 404 model failures", async () => {

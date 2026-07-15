@@ -124,6 +124,7 @@ export interface AssistantAskResponse {
     requestId?: string;
     attempts?: number;
     usedFallbackModel?: boolean;
+    mode?: "provider" | "provider-fallback" | "local-fallback";
   };
 }
 

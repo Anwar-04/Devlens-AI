@@ -58,6 +58,7 @@ export type AssistantAskResponse = {
     requestId?: string;
     attempts?: number;
     usedFallbackModel?: boolean;
+    mode?: "provider" | "provider-fallback" | "local-fallback";
   };
 };
 
@@ -74,7 +75,7 @@ type AssistantProviderOptions = {
   fetchImpl?: typeof fetch;
   maxAttempts?: number;
   fallbackModel?: string;
-  fallbackMaxAttempts?: number;
+  modelChain?: string[];
   retryBaseDelayMs?: number;
   retryJitterMs?: number;
   requestId?: string;
@@ -171,6 +172,7 @@ class ProviderRequestError extends Error {
     readonly providerMessage?: string,
     readonly model?: string,
     readonly temporary = false,
+    readonly quotaExhausted = false,
   ) {
     super(message);
     this.name = "ProviderRequestError";
@@ -211,6 +213,15 @@ function isRetryableGeminiStatus(status: number) {
   return status === 429 || status === 502 || status === 503 || status === 504;
 }
 
+function isGeminiDailyQuotaError(status: number | undefined, message: string | undefined) {
+  return (
+    status === 429 &&
+    /generativelanguage\.googleapis\.com\/generate_content_free_tier_requests/i.test(
+      message ?? "",
+    )
+  );
+}
+
 function getRetryDelayMs(response: Response | null, attempt: number, baseDelayMs: number, jitterMs: number) {
   const retryAfterMs = response ? getRetryAfterMs(response) : null;
   if (retryAfterMs !== null) return retryAfterMs;
@@ -242,8 +253,42 @@ function logGeminiTemporaryFailure(status: number | "network", retryInMs: number
   );
 }
 
-function shouldTryFallbackModel(error: ProviderRequestError) {
-  return error.provider === "gemini" && error.temporary && [502, 503, 504].includes(error.status ?? 0);
+function shouldTryNextGeminiModel(error: ProviderRequestError) {
+  return (
+    error.provider === "gemini" &&
+    (error.quotaExhausted || (error.temporary && [502, 503, 504].includes(error.status ?? 0)))
+  );
+}
+
+function parseGeminiModelChain(value: string | undefined): string[] {
+  return (value ?? "")
+    .split(",")
+    .map((model) => model.trim())
+    .filter(Boolean);
+}
+
+function uniqueGeminiModels(models: Array<string | undefined>) {
+  const seen = new Set<string>();
+  return models.filter((model): model is string => {
+    const trimmed = model?.trim();
+    if (!trimmed || seen.has(trimmed)) return false;
+    seen.add(trimmed);
+    return true;
+  });
+}
+
+function buildGeminiModelChain(options: AssistantProviderOptions) {
+  const configuredChain = options.modelChain?.length
+    ? options.modelChain
+    : parseGeminiModelChain(process.env.GEMINI_MODEL_CHAIN);
+
+  if (configuredChain.length) return uniqueGeminiModels(configuredChain);
+
+  return uniqueGeminiModels([
+    options.model ?? process.env.GEMINI_MODEL ?? "gemini-3.1-flash-lite",
+    options.fallbackModel ?? process.env.GEMINI_FALLBACK_MODEL ?? "gemini-3-flash",
+    process.env.GEMINI_HIGH_QUALITY_MODEL ?? "gemini-3.5-flash",
+  ]);
 }
 
 function buildGeminiMetadata(
@@ -611,12 +656,11 @@ async function askGemini(
       | "baseUrl"
       | "fetchImpl"
       | "maxAttempts"
-      | "fallbackMaxAttempts"
       | "retryBaseDelayMs"
       | "retryJitterMs"
     >
   > &
-    Pick<AssistantProviderOptions, "fallbackModel" | "requestId">,
+    Pick<AssistantProviderOptions, "modelChain" | "requestId">,
 ): Promise<AssistantAskResponse> {
   const contextPack = buildContextPack(context, allowedCitations);
   const systemInstructions = buildProviderInstructions();
@@ -686,6 +730,28 @@ async function askGemini(
 
       if (!response.ok) {
         const providerMessage = await readProviderErrorMessage(response);
+        const quotaExhausted = isGeminiDailyQuotaError(response.status, providerMessage);
+        if (quotaExhausted) {
+          console.warn(
+            [
+              "[DevLens] Gemini quota exhausted",
+              options.requestId ? `requestId=${options.requestId}` : "",
+              `model=${model}`,
+            ]
+              .filter(Boolean)
+              .join(" "),
+          );
+          throw new ProviderRequestError(
+            `Gemini request quota exhausted for ${model}`,
+            "gemini",
+            response.status,
+            providerMessage,
+            model,
+            false,
+            true,
+          );
+        }
+
         const retryable = isRetryableGeminiStatus(response.status);
         if (!retryable) {
           throw new ProviderRequestError(
@@ -694,6 +760,8 @@ async function askGemini(
             response.status,
             providerMessage,
             model,
+            false,
+            false,
           );
         }
 
@@ -704,6 +772,7 @@ async function askGemini(
           providerMessage,
           model,
           true,
+          false,
         );
         if (attempt >= maxAttempts) break;
 
@@ -743,6 +812,7 @@ async function askGemini(
             requestId: options.requestId,
             attempts: attempt,
             usedFallbackModel,
+            mode: usedFallbackModel ? "provider-fallback" : "provider",
           },
         };
       }
@@ -757,6 +827,7 @@ async function askGemini(
           requestId: options.requestId,
           attempts: attempt,
           usedFallbackModel,
+          mode: usedFallbackModel ? "provider-fallback" : "provider",
         },
       };
     }
@@ -767,30 +838,35 @@ async function askGemini(
     );
   }
 
-  try {
-    return await requestModel(options.model, options.maxAttempts, false);
-  } catch (error) {
-    if (
-      error instanceof ProviderRequestError &&
-      shouldTryFallbackModel(error) &&
-      options.fallbackModel &&
-      options.fallbackModel !== options.model
-    ) {
-      console.warn(
-        [
-          "[DevLens] Gemini primary model unavailable temporarily.",
-          options.requestId ? `requestId=${options.requestId}` : "",
-          `primaryModel=${options.model}`,
-          `fallbackModel=${options.fallbackModel}`,
-        ]
-          .filter(Boolean)
-          .join(" "),
-      );
-      return requestModel(options.fallbackModel, options.fallbackMaxAttempts, true);
-    }
+  let lastError: ProviderRequestError | null = null;
+  const modelChain = uniqueGeminiModels(options.modelChain?.length ? options.modelChain : [options.model]);
+  for (let index = 0; index < modelChain.length; index += 1) {
+    const model = modelChain[index] ?? options.model;
+    try {
+      return await requestModel(model, options.maxAttempts, index > 0);
+    } catch (error) {
+      if (!(error instanceof ProviderRequestError)) throw error;
+      lastError = error;
+      const nextModel = modelChain[index + 1];
+      if (nextModel && shouldTryNextGeminiModel(error)) {
+        console.warn(
+          [
+            "[DevLens] Switching Gemini model",
+            options.requestId ? `requestId=${options.requestId}` : "",
+            `from=${model}`,
+            `to=${nextModel}`,
+          ]
+            .filter(Boolean)
+            .join(" "),
+        );
+        continue;
+      }
 
-    throw error;
+      throw error;
+    }
   }
+
+  throw lastError ?? new ProviderRequestError("Gemini request failed.", "gemini");
 }
 
 export async function checkGeminiProviderHealth(
@@ -802,7 +878,7 @@ export async function checkGeminiProviderHealth(
   answer?: string;
 }> {
   const apiKey = options.apiKey ?? process.env.GEMINI_API_KEY;
-  const model = options.model ?? process.env.GEMINI_MODEL ?? "gemini-3.5-flash";
+  const model = options.model ?? process.env.GEMINI_MODEL ?? "gemini-3.1-flash-lite";
   const baseUrl =
     options.baseUrl ?? process.env.GEMINI_BASE_URL ?? "https://generativelanguage.googleapis.com/v1beta";
   const fetchImpl = options.fetchImpl ?? fetch;
@@ -898,12 +974,9 @@ export async function createAssistantAnswer(
 
   const model =
     provider === "gemini"
-      ? options.model ?? process.env.GEMINI_MODEL ?? "gemini-3.5-flash"
+      ? options.model ?? process.env.GEMINI_MODEL ?? "gemini-3.1-flash-lite"
       : options.model ?? process.env.OPENAI_MODEL ?? "gpt-4.1-mini";
-  const fallbackModel =
-    provider === "gemini"
-      ? options.fallbackModel ?? process.env.GEMINI_FALLBACK_MODEL ?? "gemini-3.1-flash-lite"
-      : undefined;
+  const modelChain = provider === "gemini" ? buildGeminiModelChain({ ...options, model }) : [model];
   const requestKey = buildAssistantRequestKey(question, context, provider, model);
   const existingRequest = inFlightAssistantRequests.get(requestKey);
   if (existingRequest) return existingRequest;
@@ -914,7 +987,7 @@ export async function createAssistantAnswer(
         return await askGemini(question, context, allowedCitations, {
           apiKey,
           model,
-          fallbackModel,
+          modelChain,
           baseUrl:
             options.baseUrl ??
             process.env.GEMINI_BASE_URL ??
@@ -922,9 +995,6 @@ export async function createAssistantAnswer(
           fetchImpl: options.fetchImpl ?? fetch,
           maxAttempts:
             options.maxAttempts ?? readPositiveInteger(process.env.GEMINI_MAX_ATTEMPTS, 3),
-          fallbackMaxAttempts:
-            options.fallbackMaxAttempts ??
-            readPositiveInteger(process.env.GEMINI_FALLBACK_MAX_ATTEMPTS, 2),
           retryBaseDelayMs: options.retryBaseDelayMs ?? 1000,
           retryJitterMs: options.retryJitterMs ?? 250,
           requestId: options.requestId,
@@ -952,8 +1022,9 @@ export async function createAssistantAnswer(
           error instanceof ProviderRequestError
             ? {
                 provider: error.provider,
-                model: error.model ?? model,
+                model: "none",
                 requestId: options.requestId,
+                mode: "local-fallback",
               }
             : undefined,
       };

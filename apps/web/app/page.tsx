@@ -160,6 +160,7 @@ type ProviderAssistantResponse = {
     requestId?: string;
     attempts?: number;
     usedFallbackModel?: boolean;
+    mode?: "provider" | "provider-fallback" | "local-fallback";
   };
 };
 
