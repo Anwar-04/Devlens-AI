@@ -44,6 +44,7 @@ export type AssistantContext = {
 export type AssistantAskRequest = {
   question: string;
   context: AssistantContext;
+  requestId?: string;
 };
 
 export type AssistantAskResponse = {
@@ -51,6 +52,13 @@ export type AssistantAskResponse = {
   citations: AssistantCitation[];
   mode: "provider" | "fallback";
   fallbackReason?: "missing_credentials" | "provider_error" | "weak_citations";
+  providerMetadata?: {
+    provider: "openai" | "gemini";
+    model: string;
+    requestId?: string;
+    attempts?: number;
+    usedFallbackModel?: boolean;
+  };
 };
 
 type ProviderJson = {
@@ -60,9 +68,24 @@ type ProviderJson = {
 
 type AssistantProviderOptions = {
   apiKey?: string;
+  provider?: "openai" | "gemini";
   model?: string;
   baseUrl?: string;
   fetchImpl?: typeof fetch;
+  maxAttempts?: number;
+  fallbackModel?: string;
+  fallbackMaxAttempts?: number;
+  retryBaseDelayMs?: number;
+  retryJitterMs?: number;
+  requestId?: string;
+};
+
+type GeminiRequestMetadata = {
+  requestId?: string;
+  retrievedSnippetCount: number;
+  inputChars: number;
+  estimatedTokens: number;
+  messageCount: number;
 };
 
 export function cleanText(value: unknown, fallback = "") {
@@ -79,6 +102,236 @@ function compact(value: string, maxLength: number) {
 function formatLineRange(value: { startLine?: number; endLine?: number }) {
   if (!value.startLine || !value.endLine) return "";
   return `:${value.startLine}-${value.endLine}`;
+}
+
+function normalizeProvider(value?: string) {
+  return value?.toLowerCase() === "gemini" ? "gemini" : "openai";
+}
+
+export function normalizeGeminiModelPath(model: string) {
+  const trimmed = model.trim().replace(/^\/+/, "");
+  if (trimmed.startsWith("models/")) return trimmed;
+  return `models/${trimmed}`;
+}
+
+function buildGeminiGenerateUrl(baseUrl: string, model: string, apiKey: string) {
+  const normalizedBaseUrl = baseUrl.replace(/\/+$/, "");
+  const modelPath = normalizeGeminiModelPath(model)
+    .split("/")
+    .map((part) => encodeURIComponent(part))
+    .join("/");
+  const url = new URL(`${normalizedBaseUrl}/${modelPath}:generateContent`);
+  url.searchParams.set("key", apiKey);
+  return url.toString();
+}
+
+function redactGeminiGenerateUrl(url: string) {
+  const parsed = new URL(url);
+  if (parsed.searchParams.has("key")) {
+    parsed.searchParams.set("key", "[redacted]");
+  }
+  return parsed.toString().replace("key=%5Bredacted%5D", "key=[redacted]");
+}
+
+function getApiKeyPrefix(apiKey: string) {
+  return apiKey.slice(0, 6);
+}
+
+function logGeminiRequest(
+  options: Required<Pick<AssistantProviderOptions, "apiKey" | "model" | "baseUrl">>,
+  attempt: number,
+  maxAttempts: number,
+  metadata: GeminiRequestMetadata,
+) {
+  const endpoint = buildGeminiGenerateUrl(options.baseUrl, options.model, options.apiKey);
+  console.info(
+    [
+      "[DevLens] Gemini request.",
+      metadata.requestId ? `requestId=${metadata.requestId}` : "",
+      `attempt=${attempt}/${maxAttempts}`,
+      `provider=Gemini`,
+      `model=${options.model}`,
+      `retrievedSnippets=${metadata.retrievedSnippetCount}`,
+      `inputChars=${metadata.inputChars}`,
+      `estimatedTokens=${metadata.estimatedTokens}`,
+      `messages=${metadata.messageCount}`,
+      `apiKeyPrefix=${getApiKeyPrefix(options.apiKey)}******`,
+      `endpoint=${redactGeminiGenerateUrl(endpoint)}`,
+    ]
+      .filter(Boolean)
+      .join(" "),
+  );
+}
+
+class ProviderRequestError extends Error {
+  constructor(
+    message: string,
+    readonly provider: "openai" | "gemini",
+    readonly status?: number,
+    readonly providerMessage?: string,
+    readonly model?: string,
+    readonly temporary = false,
+  ) {
+    super(message);
+    this.name = "ProviderRequestError";
+  }
+}
+
+const inFlightAssistantRequests = new Map<string, Promise<AssistantAskResponse>>();
+
+function sanitizeProviderMessage(value: unknown) {
+  if (typeof value !== "string") return "";
+  return value
+    .replace(/key=[^&\s]+/gi, "key=[redacted]")
+    .replace(/x-goog-api-key["']?\s*[:=]\s*["']?[^"',\s]+/gi, "x-goog-api-key=[redacted]")
+    .replace(/authorization["']?\s*[:=]\s*["']?bearer\s+[^"',\s]+/gi, "authorization=[redacted]")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 500);
+}
+
+function getRetryAfterMs(response: Response) {
+  const retryAfter = response.headers?.get("retry-after");
+  if (!retryAfter) return null;
+
+  const seconds = Number(retryAfter);
+  if (Number.isFinite(seconds)) {
+    return Math.max(0, seconds * 1000);
+  }
+
+  const retryAt = new Date(retryAfter).getTime();
+  if (!Number.isNaN(retryAt)) {
+    return Math.max(0, retryAt - Date.now());
+  }
+
+  return null;
+}
+
+function isRetryableGeminiStatus(status: number) {
+  return status === 429 || status === 502 || status === 503 || status === 504;
+}
+
+function getRetryDelayMs(response: Response | null, attempt: number, baseDelayMs: number, jitterMs: number) {
+  const retryAfterMs = response ? getRetryAfterMs(response) : null;
+  if (retryAfterMs !== null) return retryAfterMs;
+
+  const exponentialDelay = attempt <= 1 ? 0 : baseDelayMs * 2 ** (attempt - 2);
+  const jitter = jitterMs > 0 ? Math.floor(Math.random() * jitterMs) : 0;
+  return exponentialDelay + jitter;
+}
+
+function wait(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function readPositiveInteger(value: string | undefined, fallback: number) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+}
+
+function logGeminiTemporaryFailure(status: number | "network", retryInMs: number, requestId?: string) {
+  console.warn(
+    [
+      "[DevLens] Gemini temporary failure",
+      requestId ? `requestId=${requestId}` : "",
+      `status=${status}`,
+      `retryInMs=${retryInMs}`,
+    ]
+      .filter(Boolean)
+      .join(" "),
+  );
+}
+
+function shouldTryFallbackModel(error: ProviderRequestError) {
+  return error.provider === "gemini" && error.temporary && [502, 503, 504].includes(error.status ?? 0);
+}
+
+function buildGeminiMetadata(
+  context: AssistantContext,
+  question: string,
+  contextPack: string,
+  requestId?: string,
+): GeminiRequestMetadata {
+  const instructions = buildProviderInstructions();
+  const userText = `Question: ${question}\n\n${contextPack}`;
+  const inputChars = instructions.length + userText.length;
+  return {
+    requestId,
+    retrievedSnippetCount: context.sourceSnippets?.length ?? 0,
+    inputChars,
+    estimatedTokens: Math.ceil(inputChars / 4),
+    messageCount: 2,
+  };
+}
+
+function buildAssistantRequestKey(
+  question: string,
+  context: AssistantContext,
+  provider: "openai" | "gemini",
+  model: string,
+) {
+  return JSON.stringify({
+    provider,
+    model,
+    question,
+    repository: context.repository,
+    guide: context.guide,
+    selectedFile: context.selectedFile?.path,
+    searchResults: context.searchResults?.map((citation) => ({
+      path: citation.path,
+      startLine: citation.startLine,
+      endLine: citation.endLine,
+    })),
+    localAnswer: context.localAnswer,
+  });
+}
+
+async function readProviderErrorMessage(response: Response) {
+  const text = await response.text().catch(() => "");
+  if (!text) return "";
+
+  try {
+    const parsed = JSON.parse(text) as {
+      error?: { message?: unknown; status?: unknown };
+      message?: unknown;
+    };
+    return sanitizeProviderMessage(
+      typeof parsed.error?.message === "string"
+        ? parsed.error.message
+        : typeof parsed.message === "string"
+          ? parsed.message
+          : text,
+    );
+  } catch {
+    return sanitizeProviderMessage(text);
+  }
+}
+
+function logProviderFailure(error: unknown) {
+  if (error instanceof ProviderRequestError) {
+    const modelUnavailable =
+      error.provider === "gemini" &&
+      error.status === 404 &&
+      /model|not found|not available|no longer available/i.test(
+        error.providerMessage ?? error.message,
+      );
+    console.warn(
+      [
+        `[DevLens] ${error.provider} provider request failed.`,
+        error.status ? `status=${error.status}` : "",
+        error.model ? `model=${error.model}` : "",
+        modelUnavailable ? "reason=model_unavailable not_retrying=true" : "",
+        error.providerMessage ? `message="${error.providerMessage}"` : "",
+      ]
+        .filter(Boolean)
+        .join(" "),
+    );
+    return;
+  }
+
+  if (error instanceof Error) {
+    console.warn(`[DevLens] Provider request failed. message="${sanitizeProviderMessage(error.message)}"`);
+  }
 }
 
 export function getAllowedCitations(context: AssistantContext) {
@@ -177,7 +430,17 @@ export function parseProviderJson(text: string): ProviderJson {
   const trimmed = text.trim();
   const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
   const candidate = fenced?.[1] ?? trimmed;
-  return JSON.parse(candidate) as ProviderJson;
+  const parsed = JSON.parse(candidate) as ProviderJson;
+  const nestedAnswer = cleanText(parsed.answer);
+  if (nestedAnswer.startsWith("{")) {
+    try {
+      const nested = parseProviderJson(nestedAnswer);
+      if (cleanText(nested.answer)) return nested;
+    } catch {
+      return parsed;
+    }
+  }
+  return parsed;
 }
 
 export function filterProviderCitations(
@@ -228,16 +491,55 @@ export function extractResponseText(payload: unknown): string {
     .trim();
 }
 
+export function extractGeminiResponseText(payload: unknown): string {
+  if (!payload || typeof payload !== "object") return "";
+  const candidates = (payload as { candidates?: unknown }).candidates;
+  if (!Array.isArray(candidates)) return "";
+
+  return candidates
+    .flatMap((candidate) => {
+      if (!candidate || typeof candidate !== "object") return [];
+      const content = (candidate as { content?: unknown }).content;
+      if (!content || typeof content !== "object") return [];
+      const parts = (content as { parts?: unknown }).parts;
+      return Array.isArray(parts) ? parts : [];
+    })
+    .map((part) => {
+      if (!part || typeof part !== "object") return "";
+      return cleanText((part as { text?: unknown }).text);
+    })
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+}
+
 export function buildProviderInstructions() {
   return [
     "You are DevLens AI, a repository onboarding assistant.",
     "Answer only from the provided repository context.",
     "Do not invent file paths, frameworks, APIs, routes, dependencies, or behavior.",
     "Return compact JSON with keys answer and citations.",
-    "Citations must use only paths from the allowed citations list.",
+    "Citations must use exact path values copied from the allowed citations list.",
     "Prefer concise, repository-specific answers.",
     "For weak evidence, say what is uncertain and name the next cited file to inspect.",
   ].join(" ");
+}
+
+function buildWeakCitationResponse(
+  answer: string,
+  localAnswer: string | undefined,
+  allowedCitations: AssistantCitation[],
+): AssistantAskResponse {
+  const verifiedCitations = allowedCitations.slice(0, 3);
+  const honestAnswer = cleanText(answer) || localAnswer || "";
+  return {
+    answer: honestAnswer
+      ? `${honestAnswer} I could not verify the exact source references returned with this answer, so the citations below are the closest verified repository anchors.`
+      : "I could not verify enough source references for that answer. Start with the cited repository files below.",
+    citations: verifiedCitations,
+    mode: "fallback",
+    fallbackReason: "weak_citations",
+  };
 }
 
 async function askOpenAI(
@@ -262,13 +564,18 @@ async function askOpenAI(
   });
 
   if (!response.ok) {
-    throw new Error(`OpenAI request failed with ${response.status}`);
+    throw new ProviderRequestError(
+      `OpenAI request failed with ${response.status}`,
+      "openai",
+      response.status,
+      await readProviderErrorMessage(response),
+    );
   }
 
   const payload = await response.json();
   const outputText = extractResponseText(payload);
   if (!outputText) {
-    throw new Error("OpenAI response did not include answer text.");
+    throw new ProviderRequestError("OpenAI response did not include answer text.", "openai");
   }
 
   let parsed: ProviderJson;
@@ -282,14 +589,7 @@ async function askOpenAI(
   const citations = filterProviderCitations(parsed.citations, allowedCitations);
 
   if (!citations.length && allowedCitations.length) {
-    return {
-      answer:
-        context.localAnswer ||
-        `${answer} I could not tie that answer to a verified file citation, so start with the cited repository guide files and inspect the source directly.`,
-      citations: allowedCitations.slice(0, 3),
-      mode: "fallback",
-      fallbackReason: "weak_citations",
-    };
+    return buildWeakCitationResponse(answer, context.localAnswer, allowedCitations);
   }
 
   return {
@@ -299,13 +599,291 @@ async function askOpenAI(
   };
 }
 
+async function askGemini(
+  question: string,
+  context: AssistantContext,
+  allowedCitations: AssistantCitation[],
+  options: Required<
+    Pick<
+      AssistantProviderOptions,
+      | "apiKey"
+      | "model"
+      | "baseUrl"
+      | "fetchImpl"
+      | "maxAttempts"
+      | "fallbackMaxAttempts"
+      | "retryBaseDelayMs"
+      | "retryJitterMs"
+    >
+  > &
+    Pick<AssistantProviderOptions, "fallbackModel" | "requestId">,
+): Promise<AssistantAskResponse> {
+  const contextPack = buildContextPack(context, allowedCitations);
+  const systemInstructions = buildProviderInstructions();
+  const userText = `Question: ${question}\n\n${contextPack}`;
+  const metadata = buildGeminiMetadata(context, question, contextPack, options.requestId);
+  const requestInit: RequestInit = {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      systemInstruction: {
+        parts: [{ text: systemInstructions }],
+      },
+      contents: [
+        {
+          role: "user",
+          parts: [{ text: userText }],
+        },
+      ],
+      generationConfig: {
+        temperature: 0.2,
+        responseMimeType: "application/json",
+      },
+    }),
+  };
+
+  async function requestModel(
+    model: string,
+    maxAttempts: number,
+    usedFallbackModel: boolean,
+  ): Promise<AssistantAskResponse> {
+    const endpoint = buildGeminiGenerateUrl(options.baseUrl, model, options.apiKey);
+    const logOptions = {
+      apiKey: options.apiKey,
+      model,
+      baseUrl: options.baseUrl,
+    };
+    let lastTemporaryError: ProviderRequestError | null = null;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      logGeminiRequest(logOptions, attempt, maxAttempts, metadata);
+
+      let response: Response;
+      try {
+        response = await options.fetchImpl(endpoint, requestInit);
+      } catch (error) {
+        const retryInMs = getRetryDelayMs(
+          null,
+          attempt + 1,
+          options.retryBaseDelayMs,
+          options.retryJitterMs,
+        );
+        lastTemporaryError = new ProviderRequestError(
+          "Gemini network request failed.",
+          "gemini",
+          undefined,
+          error instanceof Error ? sanitizeProviderMessage(error.message) : "network error",
+          model,
+          true,
+        );
+        if (attempt >= maxAttempts) break;
+        logGeminiTemporaryFailure("network", retryInMs, options.requestId);
+        await wait(retryInMs);
+        continue;
+      }
+
+      if (!response.ok) {
+        const providerMessage = await readProviderErrorMessage(response);
+        const retryable = isRetryableGeminiStatus(response.status);
+        if (!retryable) {
+          throw new ProviderRequestError(
+            `Gemini request failed with ${response.status}`,
+            "gemini",
+            response.status,
+            providerMessage,
+            model,
+          );
+        }
+
+        lastTemporaryError = new ProviderRequestError(
+          `Gemini request failed with ${response.status}`,
+          "gemini",
+          response.status,
+          providerMessage,
+          model,
+          true,
+        );
+        if (attempt >= maxAttempts) break;
+
+        const retryInMs = getRetryDelayMs(
+          response,
+          attempt + 1,
+          options.retryBaseDelayMs,
+          options.retryJitterMs,
+        );
+        logGeminiTemporaryFailure(response.status, retryInMs, options.requestId);
+        await wait(retryInMs);
+        continue;
+      }
+
+      const payload = await response.json();
+      const outputText = extractResponseText(payload) || extractGeminiResponseText(payload);
+      if (!outputText) {
+        throw new ProviderRequestError("Gemini response did not include answer text.", "gemini");
+      }
+
+      let parsed: ProviderJson;
+      try {
+        parsed = parseProviderJson(outputText);
+      } catch {
+        parsed = { answer: outputText, citations: [] };
+      }
+
+      const answer = cleanText(parsed.answer, outputText);
+      const citations = filterProviderCitations(parsed.citations, allowedCitations);
+
+      if (!citations.length && allowedCitations.length) {
+        return {
+          ...buildWeakCitationResponse(answer, context.localAnswer, allowedCitations),
+          providerMetadata: {
+            provider: "gemini",
+            model,
+            requestId: options.requestId,
+            attempts: attempt,
+            usedFallbackModel,
+          },
+        };
+      }
+
+      return {
+        answer,
+        citations,
+        mode: "provider",
+        providerMetadata: {
+          provider: "gemini",
+          model,
+          requestId: options.requestId,
+          attempts: attempt,
+          usedFallbackModel,
+        },
+      };
+    }
+
+    throw (
+      lastTemporaryError ??
+      new ProviderRequestError("Gemini request failed.", "gemini", undefined, undefined, model, true)
+    );
+  }
+
+  try {
+    return await requestModel(options.model, options.maxAttempts, false);
+  } catch (error) {
+    if (
+      error instanceof ProviderRequestError &&
+      shouldTryFallbackModel(error) &&
+      options.fallbackModel &&
+      options.fallbackModel !== options.model
+    ) {
+      console.warn(
+        [
+          "[DevLens] Gemini primary model unavailable temporarily.",
+          options.requestId ? `requestId=${options.requestId}` : "",
+          `primaryModel=${options.model}`,
+          `fallbackModel=${options.fallbackModel}`,
+        ]
+          .filter(Boolean)
+          .join(" "),
+      );
+      return requestModel(options.fallbackModel, options.fallbackMaxAttempts, true);
+    }
+
+    throw error;
+  }
+}
+
+export async function checkGeminiProviderHealth(
+  options: AssistantProviderOptions = {},
+): Promise<{
+  ok: boolean;
+  model: string;
+  requestId?: string;
+  answer?: string;
+}> {
+  const apiKey = options.apiKey ?? process.env.GEMINI_API_KEY;
+  const model = options.model ?? process.env.GEMINI_MODEL ?? "gemini-3.5-flash";
+  const baseUrl =
+    options.baseUrl ?? process.env.GEMINI_BASE_URL ?? "https://generativelanguage.googleapis.com/v1beta";
+  const fetchImpl = options.fetchImpl ?? fetch;
+  if (!apiKey) {
+    throw new ProviderRequestError("Gemini credentials are not configured.", "gemini", undefined, undefined, model);
+  }
+
+  const endpoint = buildGeminiGenerateUrl(baseUrl, model, apiKey);
+  const requestId = options.requestId;
+  const metadata: GeminiRequestMetadata = {
+    requestId,
+    retrievedSnippetCount: 0,
+    inputChars: "Reply with only: OK".length,
+    estimatedTokens: 5,
+    messageCount: 1,
+  };
+  logGeminiRequest({ apiKey, model, baseUrl }, 1, 1, metadata);
+
+  const response = await fetchImpl(endpoint, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      contents: [
+        {
+          role: "user",
+          parts: [{ text: "Reply with only: OK" }],
+        },
+      ],
+      generationConfig: {
+        temperature: 0,
+      },
+    }),
+  });
+
+  if (!response.ok) {
+    throw new ProviderRequestError(
+      `Gemini health check failed with ${response.status}`,
+      "gemini",
+      response.status,
+      await readProviderErrorMessage(response),
+      model,
+      isRetryableGeminiStatus(response.status),
+    );
+  }
+
+  const payload = await response.json();
+  return {
+    ok: true,
+    model,
+    requestId,
+    answer: extractGeminiResponseText(payload),
+  };
+}
+
 export async function createAssistantAnswer(
   question: string,
   context: AssistantContext,
   options: AssistantProviderOptions = {},
 ): Promise<AssistantAskResponse> {
   const allowedCitations = getAllowedCitations(context);
-  const apiKey = options.apiKey ?? process.env.OPENAI_API_KEY;
+  if (!allowedCitations.length) {
+    return {
+      answer:
+        context.localAnswer ||
+        "I need repository analysis context before I can answer with verified file citations. Run or refresh the repository analysis, then ask again.",
+      citations: [],
+      mode: "fallback",
+      fallbackReason: "weak_citations",
+    };
+  }
+
+  const provider = normalizeProvider(
+    options.provider ??
+      process.env.AI_PROVIDER ??
+      (process.env.GEMINI_API_KEY && !process.env.OPENAI_API_KEY ? "gemini" : "openai"),
+  );
+  const apiKey =
+    options.apiKey ??
+    (provider === "gemini" ? process.env.GEMINI_API_KEY : process.env.OPENAI_API_KEY);
 
   if (!apiKey) {
     return {
@@ -318,21 +896,74 @@ export async function createAssistantAnswer(
     };
   }
 
-  try {
-    return await askOpenAI(question, context, allowedCitations, {
+  const model =
+    provider === "gemini"
+      ? options.model ?? process.env.GEMINI_MODEL ?? "gemini-3.5-flash"
+      : options.model ?? process.env.OPENAI_MODEL ?? "gpt-4.1-mini";
+  const fallbackModel =
+    provider === "gemini"
+      ? options.fallbackModel ?? process.env.GEMINI_FALLBACK_MODEL ?? "gemini-3.1-flash-lite"
+      : undefined;
+  const requestKey = buildAssistantRequestKey(question, context, provider, model);
+  const existingRequest = inFlightAssistantRequests.get(requestKey);
+  if (existingRequest) return existingRequest;
+
+  const request: Promise<AssistantAskResponse> = (async () => {
+    try {
+      if (provider === "gemini") {
+        return await askGemini(question, context, allowedCitations, {
+          apiKey,
+          model,
+          fallbackModel,
+          baseUrl:
+            options.baseUrl ??
+            process.env.GEMINI_BASE_URL ??
+            "https://generativelanguage.googleapis.com/v1beta",
+          fetchImpl: options.fetchImpl ?? fetch,
+          maxAttempts:
+            options.maxAttempts ?? readPositiveInteger(process.env.GEMINI_MAX_ATTEMPTS, 3),
+          fallbackMaxAttempts:
+            options.fallbackMaxAttempts ??
+            readPositiveInteger(process.env.GEMINI_FALLBACK_MAX_ATTEMPTS, 2),
+          retryBaseDelayMs: options.retryBaseDelayMs ?? 1000,
+          retryJitterMs: options.retryJitterMs ?? 250,
+          requestId: options.requestId,
+        });
+      }
+
+      return await askOpenAI(question, context, allowedCitations, {
       apiKey,
-      model: options.model ?? process.env.OPENAI_MODEL ?? "gpt-4.1-mini",
+      model,
       baseUrl: options.baseUrl ?? process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1",
       fetchImpl: options.fetchImpl ?? fetch,
-    });
-  } catch {
-    return {
-      answer:
-        context.localAnswer ||
-        "Enhanced answers are unavailable right now. Use the cited files below to continue the investigation.",
-      citations: allowedCitations.slice(0, 5),
-      mode: "fallback",
-      fallbackReason: "provider_error",
-    };
+      });
+    } catch (error) {
+      logProviderFailure(error);
+      return {
+        answer:
+          error instanceof ProviderRequestError && error.provider === "gemini" && error.temporary
+            ? "The AI provider is temporarily busy. Please try again in a few moments."
+            : context.localAnswer ||
+              "Enhanced answers are unavailable right now. Use the cited files below to continue the investigation.",
+        citations: allowedCitations.slice(0, 5),
+        mode: "fallback" as const,
+        fallbackReason: "provider_error" as const,
+        providerMetadata:
+          error instanceof ProviderRequestError
+            ? {
+                provider: error.provider,
+                model: error.model ?? model,
+                requestId: options.requestId,
+              }
+            : undefined,
+      };
+    }
+  })();
+
+  inFlightAssistantRequests.set(requestKey, request);
+  try {
+    return await request;
+  } finally {
+    inFlightAssistantRequests.delete(requestKey);
   }
 }

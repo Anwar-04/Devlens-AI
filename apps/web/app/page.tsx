@@ -1,6 +1,6 @@
 ﻿"use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertCircle,
   Braces,
@@ -154,6 +154,13 @@ type ProviderAssistantResponse = {
   citations: DevlensCitation[];
   mode: "provider" | "fallback";
   fallbackReason?: "missing_credentials" | "provider_error" | "weak_citations";
+  providerMetadata?: {
+    provider: "openai" | "gemini";
+    model: string;
+    requestId?: string;
+    attempts?: number;
+    usedFallbackModel?: boolean;
+  };
 };
 
 type GuidedInvestigation = {
@@ -324,6 +331,22 @@ type DocsSummaryResponse = {
   }>;
 };
 
+type GuideEnhanceResponse = {
+  repositoryId: string;
+  summary: string;
+  purpose: string;
+  domain: string;
+  coreFeatures: string[];
+  architecture: string;
+  readingOrder: Array<{
+    file: string;
+    reason: string;
+  }>;
+  citations: DevlensCitation[];
+  mode: "provider" | "fallback";
+  fallbackReason?: "missing_credentials" | "provider_error" | "weak_citations";
+};
+
 type SymbolReferencesResponse = {
   repositoryId: string;
   symbol: RepositorySymbol;
@@ -354,6 +377,7 @@ type SymbolRelationshipTab = "calls" | "references" | "referencedBy";
 type WorkspaceTab = "brief" | "files" | "search";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
+const LARGE_REPO_FILE_CAP = 1200;
 
 const pipelineSteps = [
   { key: "queued", label: "Preparing", description: "Getting the analysis ready" },
@@ -364,7 +388,7 @@ const pipelineSteps = [
   },
   {
     key: "indexing_files",
-    label: "Indexing files",
+    label: "Reading files",
     description: "Building the folder and file inventory",
   },
   {
@@ -579,6 +603,18 @@ function getAnalysisStatusMessage(job: JobResponse | null, repositoryReady: bool
   return "Analysis is running. Keep this workspace open; files, guide, search, and assistant context will appear as each step completes.";
 }
 
+function getJobErrorMessage(job: JobResponse) {
+  if (!job.errorMessage) return null;
+  if (
+    /private|missing|requires GitHub access|not valid|could not be reached|network|Git could not clone|analysis failed|duplicate source|large|timed out|saving results/i.test(
+      job.errorMessage,
+    )
+  ) {
+    return job.errorMessage;
+  }
+  return `${job.errorMessage} Verify the repository URL and local services, then retry.`;
+}
+
 function getActionableErrorMessage(error: unknown, fallback: string) {
   const message = error instanceof Error ? error.message : fallback;
   if (/fetch|failed to fetch|network|connection|ECONNREFUSED|closed unexpectedly/i.test(message)) {
@@ -590,13 +626,13 @@ function getActionableErrorMessage(error: unknown, fallback: string) {
 function getAssistantStatusLabel(response?: DevlensResponse | null) {
   if (!response || response.mode !== "fallback") return null;
   if (response.fallbackReason === "missing_credentials") {
-    return "Enhanced answer unavailable. Showing file-backed answer.";
+    return "Using repository context because provider credentials are not configured.";
   }
   if (response.fallbackReason === "weak_citations") {
-    return "Answer kept to verified citations.";
+    return "Answer anchored to verified repository citations.";
   }
   if (response.fallbackReason === "provider_error") {
-    return "Enhanced answer failed. Showing file-backed answer.";
+    return "Using repository context because the provider is unavailable.";
   }
   return null;
 }
@@ -1258,7 +1294,7 @@ function buildGuidedInvestigation({
     `${summary.repository.name} is currently identified as ${inferProjectType(summary)}.`,
     summary.architecture.testFileCount
       ? `${summary.architecture.testFileCount} test file${summary.architecture.testFileCount === 1 ? "" : "s"} can help confirm expected behavior.`
-      : "Testing signals are light in the indexed files.",
+      : "Testing signals are light in the analyzed files.",
   ].slice(0, 3);
   const risks = buildInvestigationRisks(summary);
   const connections = buildConnectionLabels(selectedNode, selectedFileSymbols, summary);
@@ -1982,7 +2018,7 @@ function buildTechnicalOverviewItems(
         ? `${summary.architecture.testFileCount} test file${
             summary.architecture.testFileCount === 1 ? "" : "s"
           } detected.`
-        : "Few test signals detected in indexed paths.",
+        : "Few test signals detected in analyzed paths.",
     },
     {
       icon: Braces,
@@ -3764,7 +3800,7 @@ function SymbolGraphPanel({
                     No relationships for this symbol
                   </p>
                   <p className="mt-2 max-w-md text-sm leading-6 text-graphite">
-                    DevLens indexed this symbol, but it does not currently have
+                    DevLens found this symbol, but it does not currently have
                     calls, references, or inbound links in the current analysis.
                   </p>
                 </div>
@@ -3854,16 +3890,39 @@ function SymbolGraphPanel({
 function RepoBriefPanel({
   repositoryReady,
   summary,
+  enhancedGuide,
   isLoading,
   error,
+  isEnhancingGuide,
+  guideEnhanceStatus,
+  onEnhanceGuide,
   onOpenInFiles,
 }: {
   repositoryReady: boolean;
   summary: DocsSummaryResponse | null;
+  enhancedGuide: GuideEnhanceResponse | null;
   isLoading: boolean;
   error: string | null;
+  isEnhancingGuide: boolean;
+  guideEnhanceStatus: string | null;
+  onEnhanceGuide: () => void;
   onOpenInFiles: (symbol: { filePath: string }) => void;
 }) {
+  const guideSummary =
+    enhancedGuide?.mode === "provider" && enhancedGuide.summary
+      ? enhancedGuide.summary
+      : summary
+        ? buildSeniorRepoExplanation(summary)
+        : "";
+  const guideDomain = enhancedGuide?.domain ?? summary?.understanding.domain ?? "";
+  const guideArchitecture =
+    enhancedGuide?.architecture ??
+    (summary ? describeRepositoryArchitecture(summary) : "");
+  const guideCoreFeatures =
+    enhancedGuide?.coreFeatures ?? summary?.understanding.coreFeatures ?? [];
+  const guideReadingOrder =
+    enhancedGuide?.readingOrder ?? summary?.understanding.readingOrder ?? [];
+
   return (
     <div className="rounded-md bg-white">
       <div className="border-b border-line px-4 py-3">
@@ -3874,8 +3933,30 @@ function RepoBriefPanel({
               A scannable engineering guide for understanding this codebase.
             </p>
           </div>
-          <FileCode2 size={18} className="shrink-0 text-signal" />
+          <div className="flex shrink-0 items-center gap-2">
+            {summary ? (
+              <button
+                type="button"
+                onClick={onEnhanceGuide}
+                disabled={isEnhancingGuide}
+                className="inline-flex h-8 items-center gap-1.5 rounded-md border border-line bg-white px-2 text-xs font-medium text-graphite transition-colors hover:border-signal hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {isEnhancingGuide ? (
+                  <Loader2 size={13} className="animate-spin" />
+                ) : (
+                  <Sparkles size={13} />
+                )}
+                Improve summary
+              </button>
+            ) : null}
+            <FileCode2 size={18} className="text-signal" />
+          </div>
         </div>
+        {guideEnhanceStatus ? (
+          <p className="mt-2 text-xs leading-5 text-graphite">
+            {guideEnhanceStatus}
+          </p>
+        ) : null}
       </div>
 
       <div className="bg-white p-5">
@@ -3917,7 +3998,7 @@ function RepoBriefPanel({
                     {summary.repository.owner}/{summary.repository.name}
                   </h2>
                   <p className="mt-3 max-w-4xl text-base leading-7 text-ink">
-                    {buildSeniorRepoExplanation(summary)}
+                    {guideSummary}
                   </p>
                 </div>
                 <span
@@ -3937,7 +4018,9 @@ function RepoBriefPanel({
                     What this project appears to do
                   </p>
                   <p className="mt-2 text-sm leading-6 text-graphite">
-                    {getBusinessPurpose(summary)}
+                    {enhancedGuide?.mode === "provider" && enhancedGuide.summary
+                      ? enhancedGuide.summary
+                      : getBusinessPurpose(summary)}
                   </p>
                   <div className="mt-4 grid gap-3 md:grid-cols-2">
                     <div>
@@ -3945,7 +4028,7 @@ function RepoBriefPanel({
                         Business domain
                       </p>
                       <p className="mt-1 text-sm leading-6 text-ink">
-                        {summary.understanding.domain}
+                        {guideDomain}
                       </p>
                     </div>
                     <div>
@@ -3953,7 +4036,7 @@ function RepoBriefPanel({
                         Architecture
                       </p>
                       <p className="mt-1 text-sm leading-6 text-ink">
-                        {describeRepositoryArchitecture(summary)}
+                        {guideArchitecture}
                       </p>
                     </div>
                   </div>
@@ -3964,7 +4047,7 @@ function RepoBriefPanel({
                     Recommended reading order
                   </p>
                   <div className="mt-3 grid gap-2">
-                    {summary.understanding.readingOrder.slice(0, 6).map((item, index) => (
+                    {guideReadingOrder.slice(0, 6).map((item, index) => (
                       <div
                         key={item.file}
                         className="grid grid-cols-[24px_minmax(0,1fr)] gap-2 text-sm"
@@ -3990,8 +4073,8 @@ function RepoBriefPanel({
                 <div className="rounded-md border border-line bg-white p-4">
                   <p className="text-sm font-semibold text-ink">Core features</p>
                   <div className="mt-3 flex flex-wrap gap-2">
-                    {summary.understanding.coreFeatures.length ? (
-                      summary.understanding.coreFeatures.map((feature) => (
+                    {guideCoreFeatures.length ? (
+                      guideCoreFeatures.map((feature) => (
                         <span
                           key={feature}
                           className="rounded bg-signal/10 px-2 py-1 text-xs font-semibold text-signal"
@@ -4212,6 +4295,12 @@ export default function Home() {
   );
   const [isLoadingDocsSummary, setIsLoadingDocsSummary] = useState(false);
   const [docsSummaryError, setDocsSummaryError] = useState<string | null>(null);
+  const [enhancedGuide, setEnhancedGuide] =
+    useState<GuideEnhanceResponse | null>(null);
+  const [isEnhancingGuide, setIsEnhancingGuide] = useState(false);
+  const [guideEnhanceStatus, setGuideEnhanceStatus] = useState<string | null>(null);
+  const guideEnhancementCache = useRef(new Map<string, GuideEnhanceResponse>());
+  const autoEnhancedRepositoryIds = useRef(new Set<string>());
   const [symbolsResponse, setSymbolsResponse] =
     useState<SymbolsResponse | null>(null);
   const [selectedSymbolId, setSelectedSymbolId] = useState<string | null>(null);
@@ -4237,6 +4326,7 @@ export default function Home() {
   const [devlensResponse, setDevlensResponse] =
     useState<DevlensResponse | null>(null);
   const [isAskingDevlens, setIsAskingDevlens] = useState(false);
+  const devlensAskInFlight = useRef(false);
   const [inspectedFilePaths, setInspectedFilePaths] = useState<string[]>([]);
   const [walkthroughState, setWalkthroughState] = useState<WalkthroughState>({
     activeStepPath: null,
@@ -4329,18 +4419,18 @@ export default function Home() {
       ? {
           title: "No calls from this symbol",
           description:
-            "This symbol does not call another indexed symbol in the current analysis.",
+            "This symbol does not call another known symbol in the current analysis.",
         }
       : activeSymbolTab === "references"
         ? {
             title: "No outgoing references",
             description:
-              "DevLens did not find other indexed symbols referenced from this symbol.",
+              "DevLens did not find other known symbols referenced from this symbol.",
           }
         : {
             title: "No inbound links",
             description:
-              "No indexed symbols currently point back to this symbol.",
+              "No known symbols currently point back to this symbol.",
           };
   const guidedInvestigation = useMemo(
     () =>
@@ -4561,12 +4651,17 @@ export default function Home() {
       setDocsSummary(null);
       setDocsSummaryError(null);
       setIsLoadingDocsSummary(false);
+      setEnhancedGuide(null);
+      setGuideEnhanceStatus(null);
+      setIsEnhancingGuide(false);
       return;
     }
 
     let cancelled = false;
     setIsLoadingDocsSummary(true);
     setDocsSummaryError(null);
+    setEnhancedGuide(null);
+    setGuideEnhanceStatus(null);
 
     fetch(`${API_URL}/repositories/${job.repositoryId}/docs/summary`)
       .then(async (response) => {
@@ -4599,6 +4694,22 @@ export default function Home() {
       cancelled = true;
     };
   }, [job?.repositoryId, repositoryReady]);
+
+  useEffect(() => {
+    const repositoryId = job?.repositoryId;
+    if (!repositoryReady || !repositoryId || !docsSummary) return;
+
+    const cachedGuide = guideEnhancementCache.current.get(repositoryId);
+    if (cachedGuide) {
+      setEnhancedGuide(cachedGuide);
+      setGuideEnhanceStatus("Guide summary improved with repository citations.");
+      return;
+    }
+
+    if (autoEnhancedRepositoryIds.current.has(repositoryId)) return;
+    autoEnhancedRepositoryIds.current.add(repositoryId);
+    void enhanceRepositoryGuide("auto");
+  }, [docsSummary, job?.repositoryId, repositoryReady]);
 
   async function loadRepositoryArtifacts(repositoryId: string) {
     setIsLoadingSymbols(true);
@@ -4633,6 +4744,50 @@ export default function Home() {
     }
   }
 
+  async function enhanceRepositoryGuide(trigger: "auto" | "manual" = "manual") {
+    if (!repositoryReady || !job?.repositoryId || !docsSummary) return;
+
+    setIsEnhancingGuide(true);
+    setGuideEnhanceStatus(
+      trigger === "auto"
+        ? "Improving guide summary..."
+        : "Improving guide summary..."
+    );
+
+    try {
+      const response = await fetch(
+        `${API_URL}/repositories/${job.repositoryId}/guide/enhance`,
+        {
+          method: "POST",
+        },
+      );
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new Error(body?.message ?? "Unable to improve Repository Guide.");
+      }
+
+      const body = (await response.json()) as GuideEnhanceResponse;
+      if (body.mode === "provider" && body.summary) {
+        guideEnhancementCache.current.set(job.repositoryId, body);
+        setEnhancedGuide(body);
+        setGuideEnhanceStatus("Guide summary improved with repository citations.");
+      } else if (body.fallbackReason === "missing_credentials") {
+        setEnhancedGuide(null);
+        setGuideEnhanceStatus("Using file-backed guide because provider credentials are not configured.");
+      } else {
+        setEnhancedGuide(null);
+        setGuideEnhanceStatus("Using file-backed guide because enhanced summary was unavailable.");
+      }
+    } catch (err) {
+      setEnhancedGuide(null);
+      setGuideEnhanceStatus(
+        getActionableErrorMessage(err, "Unable to improve Repository Guide."),
+      );
+    } finally {
+      setIsEnhancingGuide(false);
+    }
+  }
+
   async function analyzeRepository() {
     setError(null);
     setTree(null);
@@ -4642,6 +4797,9 @@ export default function Home() {
     setSearchError(null);
     setDocsSummary(null);
     setDocsSummaryError(null);
+    setEnhancedGuide(null);
+    setGuideEnhanceStatus(null);
+    setIsEnhancingGuide(false);
     setSelectedFileSource(null);
     setFileSourceError(null);
     setIsLoadingFileSource(false);
@@ -4735,12 +4893,18 @@ export default function Home() {
       return { ...localResponse, mode: "local" };
     }
 
+    const requestId =
+      typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+        ? `chat_${crypto.randomUUID()}`
+        : `chat_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
     const response = await fetch(
       `${API_URL}/repositories/${job.repositoryId}/assistant/ask`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          requestId,
           question: prompt,
           context: {
             repository: {
@@ -5276,12 +5440,35 @@ export default function Home() {
         : startHere.slice(0, 4).map((item) => buildPathCitation(item.path, item.reason));
       return {
         answer: citations.length
-          ? `Start with ${citations
+          ? `Start here: ${citations
               .slice(0, 4)
               .map((item, index) => `${index + 1}. ${item.path} (${item.reason})`)
-              .join(" ")}. This follows the Repository Guide reading order so the purpose, entry points, and implementation anchors stay connected.`
+              .join(" ")}. Open the first citation, skim its setup or entry-point notes, then move through the list in order.`
           : "Start with the README, package metadata, and the first source entry point you find in the file tree.",
         citations: citations.slice(0, 4),
+      };
+    }
+
+    if (/language|languages|tech stack|stack|framework|frameworks/i.test(prompt)) {
+      const languages = docsSummary.repository.detectedLanguages;
+      const frameworks = docsSummary.repository.detectedFrameworks;
+      const topLanguages = docsSummary.architecture.topLanguages
+        .slice(0, 3)
+        .map((item) => `${item.language} (${item.files} files)`);
+      const citations = dedupeCitations([
+        ...readingOrder.slice(0, 2),
+        ...startHere.slice(0, 2).map((item) => buildPathCitation(item.path, item.reason)),
+      ]).slice(0, 4);
+
+      return {
+        answer: `This repository mainly uses ${
+          languages.length ? languages.join(", ") : "the languages detected from the analyzed files"
+        }${
+          frameworks.length ? `, with ${frameworks.join(", ")} showing up as framework signals` : ""
+        }. The strongest language counts are ${
+          topLanguages.length ? topLanguages.join(", ") : "still being inferred from the available files"
+        }. Next, open package.json or the README citation to confirm runtime scripts, dependencies, and setup details.`,
+        citations,
       };
     }
 
@@ -5298,7 +5485,7 @@ export default function Home() {
           : keyFiles.length
             ? `The most useful files to inspect are ${keyFiles
                 .map((item) => `${item.path} (${item.reason})`)
-                .join("; ")}. Open the citations to read the indexed source preview, then compare those files with the Repository Guide reading order.`
+                .join("; ")}. Open the citations to read the source preview, then compare those files with the Repository Guide reading order.`
             : "DevLens has not identified key files yet, but the file tree and search can still help you find entry points.",
         citations,
       };
@@ -5328,7 +5515,7 @@ export default function Home() {
           ? `DevLens found ${searchHits.length} matches for ${term}. Start with ${buildSearchTrail(
               searchHits,
             )} and use the citations to open the exact lines.`
-          : `I did not find a strong indexed match for ${term}. Try Search with a narrower project term, then DevLens can cite the matching source lines.`,
+          : `I did not find a strong repository match for ${term}. Try Search with a narrower project term, then DevLens can cite the matching source lines.`,
         citations: searchHits.slice(0, 4).map(buildSearchCitation),
       };
     }
@@ -5409,13 +5596,13 @@ export default function Home() {
       };
     }
 
-    if (/repository|explain/i.test(prompt)) {
+    if (/repository|repo|project|explain|what.*about|tell me about/i.test(prompt)) {
       return {
-        answer: `${docsSummary.understanding.summary} It appears to be a ${inferProjectType(
+        answer: `This repo is about ${docsSummary.understanding.purpose}. ${docsSummary.understanding.summary} It appears to be a ${inferProjectType(
           docsSummary,
         )} with ${docsSummary.repository.fileCount} files, ${
           docsSummary.repository.detectedLanguages.join(", ") || "detected source"
-        }, and ${docsSummary.symbols.counts.total} code details. The guide's purpose is: ${docsSummary.understanding.purpose}`,
+        }, and ${docsSummary.symbols.counts.total} code details. Next, open the README citation for setup context, then package.json for runtime scripts and dependencies.`,
         citations: dedupeCitations([
           ...readingOrder.slice(0, 3),
           ...codeSignals.slice(0, 2).map(buildSymbolCitation),
@@ -5425,16 +5612,16 @@ export default function Home() {
 
     if (codeSignals.length) {
       return {
-        answer: `Key code details include ${codeSignals
+        answer: `I found a few concrete code anchors for that: ${codeSignals
           .map((symbol) => `${symbol.name} in ${symbol.filePath}`)
-          .join("; ")}. These are good anchors for understanding behavior.`,
+          .join("; ")}. Open those citations to inspect the source lines, then ask a narrower follow-up about the behavior you want to trace.`,
         citations: codeSignals.map(buildSymbolCitation),
       };
     }
 
     return {
       answer:
-        "Use the Repository Guide first, then open key files and search for feature terms. DevLens will keep answers tied to the indexed files and source lines it can cite.",
+        "Use the Repository Guide first, then open key files and search for feature terms. DevLens will keep answers tied to repository files and source lines it can cite.",
       citations: startHere
         .slice(0, 3)
         .map((item) => buildPathCitation(item.path, item.reason)),
@@ -5470,7 +5657,9 @@ export default function Home() {
   async function askDevlens(prompt: string) {
     const trimmedPrompt = prompt.trim();
     if (!trimmedPrompt) return;
+    if (devlensAskInFlight.current) return;
 
+    devlensAskInFlight.current = true;
     setDevlensPrompt(prompt);
     setIsAskingDevlens(true);
 
@@ -5508,6 +5697,7 @@ export default function Home() {
         citations: [],
       });
     } finally {
+      devlensAskInFlight.current = false;
       setIsAskingDevlens(false);
     }
   }
@@ -5531,6 +5721,9 @@ export default function Home() {
   const activeStepIndex = getStepIndex(job?.currentStep);
   const isRunning =
     job?.status === "QUEUED" || job?.status === "RUNNING" || isSubmitting;
+  const largeRepoModeLikely =
+    job?.status === "COMPLETED" &&
+    (repository?.fileCount ?? tree?.fileCount ?? 0) >= LARGE_REPO_FILE_CAP;
 
   return (
     <main className="min-h-screen bg-cloud text-ink">
@@ -5551,8 +5744,8 @@ export default function Home() {
         </div>
       </header>
 
-      <section className="grid min-h-[calc(100vh-4rem)] grid-cols-1 xl:grid-cols-[300px_minmax(0,1fr)_360px]">
-        <aside className="flex min-h-0 flex-col border-b border-line bg-white p-4 xl:border-b-0 xl:border-r">
+      <section className="grid min-h-[calc(100vh-4rem)] min-w-0 grid-cols-1 overflow-x-hidden xl:grid-cols-[300px_minmax(0,1fr)_360px]">
+        <aside className="min-w-0 overflow-hidden flex min-h-0 flex-col border-b border-line bg-white p-4 xl:border-b-0 xl:border-r">
           <div className="rounded-md border border-line bg-cloud p-3">
             <div className="flex items-center justify-between gap-3">
               <div className="min-w-0">
@@ -5596,7 +5789,7 @@ export default function Home() {
                 </div>
                 {job.errorMessage ? (
                   <p className="mt-2 text-xs leading-5 text-red-600">
-                    {job.errorMessage} Verify the repository URL and local services, then retry.
+                    {getJobErrorMessage(job)}
                   </p>
                 ) : null}
               </div>
@@ -5734,7 +5927,7 @@ export default function Home() {
           </div>
         </aside>
 
-        <section className="min-h-0 overflow-auto p-4 md:p-6">
+        <section className="min-h-0 min-w-0 overflow-auto p-4 md:p-6">
           <div className="mb-6">
             <h1 className="text-2xl font-semibold tracking-normal">
               Repository Workspace
@@ -5792,13 +5985,18 @@ export default function Home() {
                   Elapsed: {calculateDuration(job)}
                   {job.errorMessage ? (
                     <span className="text-red-600">
-                      - {job.errorMessage} Check the URL and local services, then retry.
+                      - {getJobErrorMessage(job)}
                     </span>
                   ) : null}
                 </div>
                 <p className="mt-2 text-xs leading-5 text-graphite">
                   {getAnalysisStatusMessage(job, repositoryReady)}
                 </p>
+                {largeRepoModeLikely ? (
+                  <p className="mt-1 text-xs leading-5 text-graphite">
+                    Large repository mode used. DevLens prioritized the most useful files for onboarding.
+                  </p>
+                ) : null}
               </div>
             ) : (
               <p className="mt-3 text-xs leading-5 text-graphite">
@@ -6386,16 +6584,20 @@ export default function Home() {
             <RepoBriefPanel
               repositoryReady={repositoryReady}
               summary={docsSummary}
+              enhancedGuide={enhancedGuide}
               isLoading={isLoadingDocsSummary}
               error={docsSummaryError}
+              isEnhancingGuide={isEnhancingGuide}
+              guideEnhanceStatus={guideEnhanceStatus}
+              onEnhanceGuide={enhanceRepositoryGuide}
               onOpenInFiles={openSymbolInFiles}
             />
           ) : null}
         </section>
 
-        <aside className="flex min-h-[520px] flex-col border-t border-line bg-white p-4 xl:min-h-0 xl:border-l xl:border-t-0">
-          <div className="flex items-center justify-between gap-3">
-            <div>
+        <aside className="min-w-0 overflow-hidden flex min-h-[520px] flex-col border-t border-line bg-white p-4 xl:min-h-0 xl:border-l xl:border-t-0">
+          <div className="flex min-w-0 items-center justify-between gap-3">
+            <div className="min-w-0">
               <p className="font-semibold">DevLens AI</p>
               <p className="mt-1 text-sm leading-6 text-graphite">
                 Ask practical questions about this repository.
@@ -6410,7 +6612,7 @@ export default function Home() {
             </p>
           </div>
 
-          <div className="mt-2 flex flex-wrap gap-2">
+          <div className="mt-2 flex min-w-0 flex-wrap gap-2">
             {[
               "Start walkthrough",
               "Continue walkthrough",
@@ -6432,7 +6634,7 @@ export default function Home() {
                 type="button"
                 onClick={() => handleSuggestedQuestion(prompt)}
                 disabled={isAskingDevlens}
-                className="rounded-full border border-line bg-white px-3 py-1.5 text-left text-xs font-medium text-graphite transition-colors hover:border-signal hover:bg-cloud hover:text-ink"
+                className="max-w-full rounded-full border border-line bg-white px-3 py-1.5 text-left text-xs font-medium text-graphite transition-colors hover:border-signal hover:bg-cloud hover:text-ink"
               >
                 {prompt}
               </button>
@@ -6440,13 +6642,13 @@ export default function Home() {
           </div>
 
           {repositoryReady && guidedInvestigation ? (
-            <section className="mt-4 rounded-md border border-line bg-cloud p-3">
-              <div className="flex items-start justify-between gap-3">
+            <section className="mt-4 min-w-0 overflow-hidden rounded-md border border-line bg-cloud p-3">
+              <div className="flex min-w-0 items-start justify-between gap-3">
                 <div className="min-w-0">
                   <p className="text-xs font-semibold uppercase tracking-wide text-graphite">
                     Guided investigation
                   </p>
-                  <p className="mt-1 text-sm font-semibold leading-5 text-ink">
+                  <p className="mt-1 break-words text-sm font-semibold leading-5 text-ink">
                     {guidedInvestigation.status}
                   </p>
                 </div>
@@ -6461,13 +6663,13 @@ export default function Home() {
               </div>
 
               {walkthrough ? (
-                <div className="mt-3 rounded-md border border-line bg-white p-3">
-                  <div className="flex items-start justify-between gap-3">
+                <div className="mt-3 min-w-0 overflow-hidden rounded-md border border-line bg-white p-3">
+                  <div className="flex min-w-0 items-start justify-between gap-3">
                     <div className="min-w-0">
                       <p className="text-xs font-semibold uppercase tracking-wide text-graphite">
                         Walkthrough progress
                       </p>
-                      <p className="mt-1 text-sm font-semibold leading-5 text-ink">
+                      <p className="mt-1 truncate text-sm font-semibold leading-5 text-ink" title={walkthrough.current?.path ?? undefined}>
                         {walkthrough.isComplete
                           ? "Walkthrough complete"
                           : walkthrough.current?.path ?? "Choose a starting file"}
@@ -6514,7 +6716,7 @@ export default function Home() {
                       ? "Review the completion summary, then choose the next deep dive from the cited files."
                       : walkthrough.current?.reason ?? "Start the walkthrough from the Repository Guide reading order."}
                   </p>
-                  <p className="mt-1 truncate text-[11px] text-graphite">
+                  <p className="mt-1 truncate text-[11px] text-graphite" title={walkthrough.next?.path ?? undefined}>
                     Next: {walkthrough.next?.path ?? "No remaining file"}
                   </p>
 
@@ -6580,8 +6782,8 @@ export default function Home() {
               ) : null}
 
               {walkthrough?.isComplete && walkthroughHandoff ? (
-                <div className="mt-3 rounded-md border border-mint/20 bg-white p-3">
-                  <div className="flex items-start justify-between gap-3">
+                <div className="mt-3 min-w-0 overflow-hidden rounded-md border border-mint/20 bg-white p-3">
+                  <div className="flex min-w-0 items-start justify-between gap-3">
                     <div className="min-w-0">
                       <p className="text-xs font-semibold uppercase tracking-wide text-mint">
                         Onboarding handoff
@@ -6614,8 +6816,8 @@ export default function Home() {
                               key={`${citation.path}-${citation.startLine ?? "file"}`}
                               type="button"
                               onClick={() => openCitationInFiles(citation)}
-                              className="max-w-full truncate rounded bg-cloud px-2 py-1 text-[11px] font-medium text-graphite hover:text-signal"
-                              title={citation.reason}
+                              className="max-w-full min-w-0 truncate rounded bg-cloud px-2 py-1 text-[11px] font-medium text-graphite hover:text-signal"
+                              title={`${citation.path} - ${citation.reason}`}
                             >
                               {citation.path}
                             </button>
@@ -6639,8 +6841,8 @@ export default function Home() {
                               key={`${citation.path}-${citation.startLine ?? "file"}`}
                               type="button"
                               onClick={() => openCitationInFiles(citation)}
-                              className="max-w-full truncate rounded bg-amber/10 px-2 py-1 text-[11px] font-medium text-amber hover:text-ink"
-                              title={citation.reason}
+                              className="max-w-full min-w-0 truncate rounded bg-amber/10 px-2 py-1 text-[11px] font-medium text-amber hover:text-ink"
+                              title={`${citation.path} - ${citation.reason}`}
                             >
                               {citation.path}
                             </button>
@@ -6663,13 +6865,13 @@ export default function Home() {
                       <button
                         type="button"
                         onClick={() => openCitationInFiles(walkthroughHandoff.nextDeepDive!)}
-                        className="rounded-md border border-line bg-cloud px-2 py-1.5 text-left text-xs hover:border-signal hover:bg-white"
+                        className="min-w-0 rounded-md border border-line bg-cloud px-2 py-1.5 text-left text-xs hover:border-signal hover:bg-white"
                         title={walkthroughHandoff.nextDeepDiveReason}
                       >
                         <span className="block font-semibold text-ink">
                           Next deep dive
                         </span>
-                        <span className="mt-0.5 block truncate text-graphite">
+                        <span className="mt-0.5 block truncate text-graphite" title={walkthroughHandoff.nextDeepDive.path}>
                           {walkthroughHandoff.nextDeepDive.path}
                         </span>
                       </button>
@@ -6679,7 +6881,7 @@ export default function Home() {
               ) : null}
 
               {guidedInvestigation.bestNextFile ? (
-                <div className="mt-3 rounded-md border border-line bg-white p-3">
+                <div className="mt-3 min-w-0 overflow-hidden rounded-md border border-line bg-white p-3">
                   <p className="text-xs font-semibold uppercase tracking-wide text-graphite">
                     Best next file
                   </p>
@@ -6691,7 +6893,7 @@ export default function Home() {
                   >
                     {guidedInvestigation.bestNextFile.path}
                   </button>
-                  <p className="mt-2 line-clamp-3 text-xs leading-5 text-graphite">
+                  <p className="mt-2 line-clamp-3 break-words text-xs leading-5 text-graphite">
                     {guidedInvestigation.whyItMatters}
                   </p>
                   <button
@@ -6706,30 +6908,30 @@ export default function Home() {
               ) : null}
 
               <div className="mt-3 grid gap-3">
-                <div>
+                <div className="min-w-0">
                   <p className="text-xs font-semibold uppercase tracking-wide text-graphite">
                     Important findings
                   </p>
                   <ul className="mt-2 grid gap-1.5 text-xs leading-5 text-graphite">
                     {guidedInvestigation.findings.map((finding) => (
-                      <li key={finding} className="flex gap-2">
+                      <li key={finding} className="flex min-w-0 gap-2">
                         <CheckCircle2 size={13} className="mt-0.5 shrink-0 text-mint" />
-                        <span className="line-clamp-2">{finding}</span>
+                        <span className="min-w-0 line-clamp-2 break-words">{finding}</span>
                       </li>
                     ))}
                   </ul>
                 </div>
 
                 {guidedInvestigation.connections.length ? (
-                  <div>
+                  <div className="min-w-0">
                     <p className="text-xs font-semibold uppercase tracking-wide text-graphite">
                       Connects to
                     </p>
-                    <div className="mt-2 flex flex-wrap gap-1.5">
+                    <div className="mt-2 flex min-w-0 flex-wrap gap-1.5">
                       {guidedInvestigation.connections.map((connection) => (
                         <span
                           key={connection}
-                          className="max-w-full truncate rounded bg-white px-2 py-1 text-xs font-medium text-graphite"
+                          className="inline-block max-w-full min-w-0 truncate rounded bg-white px-2 py-1 text-xs font-medium text-graphite"
                           title={connection}
                         >
                           {connection}
@@ -6740,17 +6942,17 @@ export default function Home() {
                 ) : null}
 
                 {guidedInvestigation.inspectAfter.length ? (
-                  <div>
+                  <div className="min-w-0">
                     <p className="text-xs font-semibold uppercase tracking-wide text-graphite">
                       Inspect after this
                     </p>
-                    <div className="mt-2 grid gap-1.5">
+                    <div className="mt-2 grid min-w-0 gap-1.5">
                       {guidedInvestigation.inspectAfter.map((citation) => (
                         <button
                           key={`${citation.path}-${citation.startLine ?? "file"}`}
                           type="button"
                           onClick={() => openCitationInFiles(citation)}
-                          className="grid grid-cols-[minmax(0,1fr)_auto] gap-2 rounded bg-white px-2 py-1.5 text-left text-xs text-graphite hover:bg-signal/10 hover:text-ink"
+                          className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-2 rounded bg-white px-2 py-1.5 text-left text-xs text-graphite hover:bg-signal/10 hover:text-ink"
                           title={`${citation.path} - ${citation.reason}`}
                         >
                           <span className="min-w-0 truncate font-medium">
@@ -6771,15 +6973,15 @@ export default function Home() {
                 ) : null}
 
                 {guidedInvestigation.risks.length ? (
-                  <div>
+                  <div className="min-w-0">
                     <p className="text-xs font-semibold uppercase tracking-wide text-graphite">
                       Risk signals
                     </p>
                     <ul className="mt-2 grid gap-1.5 text-xs leading-5 text-graphite">
                       {guidedInvestigation.risks.map((risk) => (
-                        <li key={risk} className="flex gap-2">
+                        <li key={risk} className="flex min-w-0 gap-2">
                           <AlertCircle size={13} className="mt-0.5 shrink-0 text-amber" />
-                          <span className="line-clamp-2">{risk}</span>
+                          <span className="min-w-0 line-clamp-2 break-words">{risk}</span>
                         </li>
                       ))}
                     </ul>
@@ -6787,34 +6989,34 @@ export default function Home() {
                 ) : null}
               </div>
 
-              <div className="mt-3 border-t border-line pt-3">
+              <div className="mt-3 min-w-0 border-t border-line pt-3">
                 <p className="text-xs font-semibold uppercase tracking-wide text-graphite">
                   Suggested follow-ups
                 </p>
-                <div className="mt-2 flex flex-wrap gap-1.5">
+                <div className="mt-2 flex min-w-0 flex-wrap gap-1.5">
                   {guidedInvestigation.followUps.map((followUp) => (
                     <button
                       key={followUp}
                       type="button"
                       onClick={() => void askDevlens(followUp)}
                       disabled={isAskingDevlens}
-                      className="rounded-full border border-line bg-white px-2 py-1 text-xs text-graphite hover:border-signal hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+                      className="max-w-full rounded-full border border-line bg-white px-2 py-1 text-xs text-graphite hover:border-signal hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       {followUp}
                     </button>
                   ))}
                 </div>
-                <p className="mt-2 text-xs leading-5 text-graphite">
+                <p className="mt-2 break-words text-xs leading-5 text-graphite">
                   {guidedInvestigation.summary}
                 </p>
                 {inspectedFilePaths.length ? (
-                  <div className="mt-2 flex flex-wrap gap-1">
+                  <div className="mt-2 flex min-w-0 flex-wrap gap-1">
                     {inspectedFilePaths.slice(0, 4).map((path) => (
                       <button
                         key={path}
                         type="button"
                         onClick={() => openPathInFiles(path)}
-                        className="max-w-full truncate rounded bg-white px-2 py-1 text-[11px] font-medium text-graphite hover:text-signal"
+                        className="max-w-full min-w-0 truncate rounded bg-white px-2 py-1 text-[11px] font-medium text-graphite hover:text-signal"
                         title={path}
                       >
                         {path}
@@ -6826,16 +7028,16 @@ export default function Home() {
             </section>
           ) : null}
 
-          <div className="mt-4 min-h-0 flex-1 overflow-auto rounded-md bg-cloud/70 p-3">
-            <div className="ml-auto max-w-[88%] rounded-md bg-ink px-3 py-2 text-sm leading-6 text-white">
+          <div className="mt-4 min-h-0 min-w-0 flex-1 overflow-hidden overflow-y-auto rounded-md bg-cloud/70 p-3">
+            <div className="ml-auto max-w-[88%] break-words rounded-md bg-ink px-3 py-2 text-sm leading-6 text-white">
               {devlensPrompt}
             </div>
-            <div className="mt-3 flex items-start gap-3">
+            <div className="mt-3 flex min-w-0 items-start gap-3">
               <div className="grid h-7 w-7 shrink-0 place-items-center rounded-md bg-white text-signal shadow-sm">
                 <Sparkles size={14} />
               </div>
-              <div className="min-w-0 rounded-md bg-white p-3 shadow-sm">
-                <p className="text-sm leading-6 text-graphite">
+              <div className="min-w-0 max-w-full overflow-hidden rounded-md bg-white p-3 shadow-sm">
+                <p className="break-words text-sm leading-6 text-graphite">
                   {isAskingDevlens ? (
                     <span className="inline-flex items-center gap-2">
                       <Loader2 size={14} className="animate-spin text-signal" />
@@ -6858,7 +7060,7 @@ export default function Home() {
                     <p className="text-xs font-semibold uppercase tracking-wide text-graphite">
                       Citations
                     </p>
-                    <div className="mt-2 grid gap-1.5">
+                    <div className="mt-2 grid min-w-0 gap-1.5">
                       {devlensResponse.citations.map((source) => (
                         <button
                           key={`${source.path}-${source.startLine ?? "file"}`}
@@ -6887,14 +7089,14 @@ export default function Home() {
                     </div>
                   </div>
                 ) : null}
-                <div className="mt-3 flex flex-wrap gap-1.5">
+                <div className="mt-3 flex min-w-0 flex-wrap gap-1.5">
                   {["Explain selected file", "Search important files"].map((followUp) => (
                     <button
                       key={followUp}
                       type="button"
                       onClick={() => void askDevlens(followUp)}
                       disabled={isAskingDevlens}
-                      className="rounded-full border border-line px-2 py-1 text-xs text-graphite hover:border-signal hover:text-ink"
+                      className="max-w-full rounded-full border border-line px-2 py-1 text-xs text-graphite hover:border-signal hover:text-ink"
                     >
                       {followUp}
                     </button>
@@ -6904,8 +7106,8 @@ export default function Home() {
             </div>
           </div>
 
-          <div className="sticky bottom-0 mt-auto bg-white pt-4">
-            <div className="rounded-md border border-line bg-cloud px-3 py-2">
+          <div className="sticky bottom-0 mt-auto min-w-0 bg-white pt-4">
+            <div className="min-w-0 rounded-md border border-line bg-cloud px-3 py-2">
               <textarea
                 value={devlensPrompt}
                 onChange={(event) => setDevlensPrompt(event.target.value)}
@@ -6915,11 +7117,11 @@ export default function Home() {
                     ? "Ask anything about this repository..."
                     : "Analyze a repository to enable DevLens AI."
                 }
-                className="w-full resize-none bg-transparent text-sm outline-none placeholder:text-graphite"
+                className="w-full resize-none break-words bg-transparent text-sm outline-none placeholder:text-graphite"
               />
-              <div className="mt-2 flex items-center justify-between">
-                <span className="text-xs text-graphite">
-                  Uses indexed files and source lines
+              <div className="mt-2 flex min-w-0 items-center justify-between gap-3">
+                <span className="min-w-0 truncate text-xs text-graphite">
+                  Uses repository files and source lines
                 </span>
                 <button
                   type="button"

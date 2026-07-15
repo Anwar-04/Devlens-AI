@@ -9,7 +9,14 @@ import {
   Query
 } from "@nestjs/common";
 import { db } from "@devlens/database";
-import { CloneJobPayload, RedisQueue } from "@devlens/shared";
+import {
+  AssistantCitation,
+  AssistantContext,
+  AssistantSourceSnippet,
+  CloneJobPayload,
+  RedisQueue
+} from "@devlens/shared";
+import { createAssistantAnswer } from "../assistant/assistant.service";
 
 interface CreateRepositoryRequest {
   workspaceId?: string;
@@ -22,7 +29,7 @@ const TEST_FILE_PATTERN =
 const DOCS_QUEUED_SECTIONS = [
   {
     title: "README summary",
-    description: "Condensed project overview from README and indexed docs."
+    description: "Condensed project overview from README and repository docs."
   },
   {
     title: "Architecture notes",
@@ -70,6 +77,19 @@ type RepositoryUnderstanding = {
   mainModules: Array<{ name: string; purpose: string }>;
   readingOrder: Array<{ file: string; reason: string }>;
   summary: string;
+};
+
+type GuideEnhanceResponse = {
+  repositoryId: string;
+  summary: string;
+  purpose: string;
+  domain: string;
+  coreFeatures: string[];
+  architecture: string;
+  readingOrder: Array<{ file: string; reason: string }>;
+  citations: AssistantCitation[];
+  mode: "provider" | "fallback";
+  fallbackReason?: "missing_credentials" | "provider_error" | "weak_citations";
 };
 
 function parseGitHubUrl(url: string): { owner: string; name: string; normalizedUrl: string } {
@@ -380,11 +400,34 @@ function serializeDocsSymbol(symbol: {
   };
 }
 
-function normalizeSignalText(value: string): string {
+export function normalizeSignalText(value: string): string {
   return value
+    .replace(/!\[[^\]]*]\([^)]*\)/g, " ")
+    .replace(/<img\b[^>]*\balt=["']([^"']+)["'][^>]*>/gi, " $1 ")
+    .replace(/<img\b[^>]*>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\[([^\]]+)]\([^)]*\)/g, "$1")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, "\"")
+    .replace(/&#39;/g, "'")
     .replace(/[`*_>#]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function getCleanReadmeLines(content: string): string[] {
+  return content
+    .split("\n")
+    .map(normalizeSignalText)
+    .filter((line) => {
+      if (!line) return false;
+      if (/^install|usage|setup|scripts$/i.test(line)) return false;
+      if (/^(build|status|coverage|npm|license|version)$/i.test(line)) return false;
+      if (/^https?:\/\//i.test(line)) return false;
+      return true;
+    });
 }
 
 function humanizeIdentifier(value: string): string {
@@ -424,14 +467,11 @@ function getSnippetForPath(snippets: SignalSnippet[], path: string): string {
     .slice(0, 5000);
 }
 
-function getReadmePurpose(snippets: SignalSnippet[]): string | null {
+export function getReadmePurpose(snippets: SignalSnippet[]): string | null {
   const readme = snippets.find((snippet) => /^README(\.|$)/i.test(snippet.path));
   if (!readme) return null;
 
-  const lines = readme.content
-    .split("\n")
-    .map(normalizeSignalText)
-    .filter((line) => line && !/^install|usage|setup|scripts$/i.test(line));
+  const lines = getCleanReadmeLines(readme.content);
   const heading = lines.find((line) => line.length > 3 && line.length < 90);
   const paragraph = lines.find((line) => line.length >= 40 && line.length < 260);
   const text = paragraph ?? heading;
@@ -476,9 +516,61 @@ function hasSignal(values: string[], pattern: RegExp): boolean {
   return values.some((value) => pattern.test(value));
 }
 
+function buildEvidenceText(
+  context: UnderstandingContext,
+  snippets: SignalSnippet[],
+  dependencies: string[] = []
+) {
+  return {
+    repo: context.repository.name.toLowerCase(),
+    readme: snippets
+      .filter((snippet) => /^README(\.|$)/i.test(snippet.path))
+      .flatMap((snippet) => getCleanReadmeLines(snippet.content))
+      .join(" ")
+      .toLowerCase(),
+    packageText: dependencies.join(" ").toLowerCase(),
+    paths: context.files.map((file) => file.path.toLowerCase()).join(" "),
+    symbols: context.symbols.map((symbol) => symbol.name.toLowerCase()).join(" ")
+  };
+}
+
+function hasCmsSignals(evidence: ReturnType<typeof buildEvidenceText>) {
+  const productText = `${evidence.repo} ${evidence.readme} ${evidence.packageText}`;
+  const structuralText = evidence.paths;
+  return (
+    /(^|[\s_-])(cms|content management|keystone)([\s_-]|$)/i.test(productText) ||
+    /superpowered cms|admin ui|schema.*content|content.*schema/i.test(productText) ||
+    /(^|\/)packages\/core(\/|$)|(^|\/)packages\/fields(\/|$)|(^|\/)packages\/auth(\/|$)/i.test(
+      structuralText
+    )
+  );
+}
+
+function hasUrlShortenerSignals(evidence: ReturnType<typeof buildEvidenceText>) {
+  const productText = `${evidence.repo} ${evidence.readme} ${evidence.packageText}`;
+  const implementationText = `${evidence.paths} ${evidence.symbols}`;
+  return (
+    /url[-_\s]?short|short[-_\s]?url|shortener|shortlink|short[-_\s]?link/i.test(
+      productText
+    ) ||
+    (/slug/i.test(productText) &&
+      /redirect|short|url/i.test(productText)) ||
+    /(^|\/)(routes?|controllers?|services?)\/[^ ]*(short|slug|redirect)[^ ]*/i.test(
+      implementationText
+    )
+  );
+}
+
 function inferFrameworkLabel(context: UnderstandingContext, dependencies: string[]) {
   const signals = [...context.repository.detectedFrameworks, ...dependencies];
+  const repoAndFiles = [
+    context.repository.name,
+    ...context.files.map((file) => file.path)
+  ].join(" ");
 
+  if (/keystone|packages\/core|packages\/fields/i.test(repoAndFiles)) {
+    return "TypeScript framework monorepo";
+  }
   if (hasSignal(signals, /express/i)) return "Express.js backend";
   if (hasSignal(signals, /nest/i)) return "NestJS backend";
   if (hasSignal(signals, /fastify/i)) return "Fastify backend";
@@ -509,49 +601,57 @@ function inferDatabaseLabel(context: UnderstandingContext, dependencies: string[
   return null;
 }
 
-function inferDomain(context: UnderstandingContext, snippets: SignalSnippet[]) {
-  const text = [
-    context.repository.name,
-    getReadmePurpose(snippets) ?? "",
-    ...context.files.map((file) => file.path),
-    ...context.symbols.map((symbol) => symbol.name)
-  ]
-    .join(" ")
-    .toLowerCase();
+export function inferDomain(context: UnderstandingContext, snippets: SignalSnippet[]) {
+  const evidence = buildEvidenceText(context, snippets);
+  const productText = `${evidence.repo} ${evidence.readme}`;
+  const fullText = `${productText} ${evidence.paths} ${evidence.symbols}`;
 
-  if (/short.?url|url.?short|link|redirect|slug/.test(text)) {
+  if (hasCmsSignals(evidence)) {
+    return "CMS and application framework";
+  }
+  if (/portfolio|personal.?site|personal.?website|resume|cv|showcase/.test(productText)) {
+    return "Personal portfolio and showcase content";
+  }
+  if (hasUrlShortenerSignals(evidence)) {
     return "URL shortening and link management";
   }
-  if (/auth|login|session|user|account/.test(text)) {
+  if (/auth|login|session|user|account/.test(fullText)) {
     return "User access and account workflows";
   }
-  if (/invoice|billing|payment|checkout|stripe/.test(text)) {
+  if (/invoice|billing|payment|checkout|stripe/.test(fullText)) {
     return "Payments and billing";
   }
-  if (/task|ticket|issue|project|workflow/.test(text)) {
+  if (/task|ticket|issue|workflow|kanban/.test(fullText)) {
     return "Project and workflow management";
   }
-  if (/chat|message|conversation/.test(text)) {
+  if (/chat|message|conversation/.test(fullText)) {
     return "Messaging and collaboration";
   }
-  if (/api|route|controller|service/.test(text)) {
+  if (/api|route|controller|service/.test(fullText)) {
     return "Backend API services";
   }
   return "Application logic and developer-facing workflows";
 }
 
-function inferCoreFeatures(context: UnderstandingContext, dependencies: string[]) {
-  const source = [
-    ...dependencies,
-    ...context.files.map((file) => file.path),
-    ...context.symbols.map((symbol) => symbol.name)
-  ].join(" ");
+export function inferCoreFeatures(
+  context: UnderstandingContext,
+  dependencies: string[],
+  snippets: SignalSnippet[] = []
+) {
+  const evidence = buildEvidenceText(context, snippets, dependencies);
+  const productText = `${evidence.repo} ${evidence.readme} ${evidence.packageText}`;
+  const source = `${productText} ${evidence.paths} ${evidence.symbols}`;
   const features = new Set<string>();
 
-  if (/auth|login|session|token|jwt|passport|oauth/i.test(source)) {
+  if (hasCmsSignals(evidence)) {
+    features.add("Content management");
+    features.add("Schema-driven application development");
+    features.add("Admin UI workflows");
+  }
+  if (/auth|login|session|token|jwt|passport|oauth/i.test(source) && !hasCmsSignals(evidence)) {
     features.add("User authentication");
   }
-  if (/short|slug|redirect|url|link/i.test(source)) {
+  if (hasUrlShortenerSignals(evidence)) {
     features.add("Short URL creation and redirect handling");
   }
   if (/route|router|controller|handler/i.test(source)) {
@@ -640,11 +740,16 @@ function inferArchitecture(context: UnderstandingContext, modules: Array<{ name:
   return "The project appears to be organized around entry files, implementation modules, configuration, and supporting utilities.";
 }
 
-function buildReadingOrder(context: UnderstandingContext) {
+export function buildReadingOrder(context: UnderstandingContext) {
   const candidates = context.files.map((file) => file.path);
   const orderedPatterns: Array<[RegExp, string]> = [
     [/^README(\.|$)/i, "Understand the product purpose and setup notes."],
     [/^package\.json$/i, "Review scripts, dependencies, and runtime shape."],
+    [/^packages\/core\/package\.json$/i, "Understand the core package and public package metadata."],
+    [/^packages\/core\/src\/index\.[cm]?[jt]sx?$/i, "Inspect the core package entry point."],
+    [/^packages\/core\//i, "Trace the core package implementation."],
+    [/^docs\/(README|index|overview|getting-started|docs-navigation)\.mdx?$/i, "Read the documentation overview and navigation path."],
+    [/^docs\//i, "Use project docs to confirm product concepts and usage."],
     [/(^|\/)(app|server|main|index)\.[cm]?[jt]sx?$/i, "Find the application entry point."],
     [/(^|\/)routes?\//i, "Trace API surfaces and request flow."],
     [/(^|\/)controllers?\//i, "See how requests are handled."],
@@ -664,7 +769,7 @@ function buildReadingOrder(context: UnderstandingContext) {
     .slice(0, 8);
 }
 
-function buildRepositoryUnderstanding(
+export function buildRepositoryUnderstanding(
   context: UnderstandingContext,
   snippets: SignalSnippet[]
 ): RepositoryUnderstanding {
@@ -674,7 +779,7 @@ function buildRepositoryUnderstanding(
   const framework = inferFrameworkLabel(context, packageSignals.dependencies);
   const database = inferDatabaseLabel(context, packageSignals.dependencies);
   const domain = inferDomain(context, snippets);
-  const features = inferCoreFeatures(context, packageSignals.dependencies);
+  const features = inferCoreFeatures(context, packageSignals.dependencies, snippets);
   const modules = inferMainModules(context);
   const architecture = inferArchitecture(context, modules);
   const readingOrder = buildReadingOrder(context);
@@ -715,6 +820,74 @@ function buildRepositoryUnderstanding(
     mainModules: modules,
     readingOrder,
     summary
+  };
+}
+
+function buildGuideEnhancementContext(
+  context: Awaited<ReturnType<typeof loadDocsContext>>
+): AssistantContext {
+  const readingOrder = context.understanding.readingOrder.map((item) => ({
+    path: item.file,
+    label: item.file,
+    reason: item.reason
+  }));
+  const importantPathCitations = context.importantPaths.slice(0, 8).map((file) => ({
+    path: file.path,
+    label: file.path,
+    reason: describePathResponsibility(file.path)
+  }));
+  const sourceSnippets: AssistantSourceSnippet[] = context.signalSnippets
+    .filter((snippet) => /^README(\.|$)|^package\.json$|^docs\//i.test(snippet.path))
+    .slice(0, 6)
+    .map((snippet) => ({
+      path: snippet.path,
+      content: normalizeSignalText(snippet.content).slice(0, 1800)
+    }));
+
+  return {
+    repository: {
+      owner: context.repository.owner,
+      name: context.repository.name,
+      url: context.repository.url,
+      languages: context.repository.detectedLanguages,
+      frameworks: context.repository.detectedFrameworks,
+      fileCount: context.repository.fileCount
+    },
+    guide: {
+      summary: context.understanding.summary,
+      purpose: context.understanding.purpose,
+      architecture: context.understanding.architecture,
+      readingOrder: [...readingOrder, ...importantPathCitations]
+    },
+    sourceSnippets,
+    localAnswer: context.understanding.summary
+  };
+}
+
+export function buildGuideEnhanceResponse({
+  repositoryId,
+  understanding,
+  answer
+}: {
+  repositoryId: string;
+  understanding: RepositoryUnderstanding;
+  answer: Awaited<ReturnType<typeof createAssistantAnswer>>;
+}): GuideEnhanceResponse {
+  const canUseProviderSummary = answer.mode === "provider" && answer.citations.length > 0;
+
+  return {
+    repositoryId,
+    summary: canUseProviderSummary ? answer.answer : understanding.summary,
+    purpose: understanding.purpose,
+    domain: understanding.domain,
+    coreFeatures: understanding.coreFeatures,
+    architecture: understanding.architecture,
+    readingOrder: understanding.readingOrder,
+    citations: answer.citations,
+    mode: canUseProviderSummary ? "provider" : "fallback",
+    fallbackReason: canUseProviderSummary
+      ? undefined
+      : answer.fallbackReason ?? "weak_citations"
   };
 }
 
@@ -802,11 +975,11 @@ async function loadDocsContext(id: string) {
   const frameworkSummary = repository.detectedFrameworks.length
     ? repository.detectedFrameworks.join(", ")
     : "No framework signal has been confirmed yet.";
-  const overviewText = `${repository.owner}/${repository.name} is indexed as a ${
+  const overviewText = `${repository.owner}/${repository.name} is analyzed as a ${
     primaryLanguage?.language ?? "code"
   } repository with ${repository.fileCount} files and ${
     symbols.length
-  } parser-backed symbols. ${frameworkSummary}`;
+  } code details. ${frameworkSummary}`;
   const signalPaths = getSignalPaths(files);
   const signalChunks = signalPaths.length
     ? await db.knowledgeChunk.findMany({
@@ -885,7 +1058,7 @@ function buildReadmeDraft(context: Awaited<ReturnType<typeof loadDocsContext>>) 
     .slice(0, 5)
     .map(
       (symbol) =>
-        `\`${symbol.name}\` has ${symbol.connectionCount} indexed link${
+        `\`${symbol.name}\` has ${symbol.connectionCount} relationship${
           symbol.connectionCount === 1 ? "" : "s"
         }`
     );
@@ -901,8 +1074,8 @@ function buildReadmeDraft(context: Awaited<ReturnType<typeof loadDocsContext>>) 
     "",
     `- Repository: ${repository.url}`,
     `- Analysis status: ${repository.analysisStatus}`,
-    `- Files indexed: ${repository.fileCount}`,
-    `- Parser-backed symbols: ${context.symbols.length}`,
+    `- Files analyzed: ${repository.fileCount}`,
+    `- Code details: ${context.symbols.length}`,
     `- Primary language: ${context.primaryLanguage?.language ?? "Pending"}`,
     `- Frameworks: ${
       repository.detectedFrameworks.length
@@ -914,13 +1087,13 @@ function buildReadmeDraft(context: Awaited<ReturnType<typeof loadDocsContext>>) 
     "",
     "### Top languages",
     "",
-    markdownList(languageLines, "Language signals will appear after indexing."),
+    markdownList(languageLines, "Language signals will appear after analysis."),
     "",
     "### Important paths",
     "",
     markdownList(
       importantPathLines.map((path) => `\`${path}\``),
-      "Important paths will appear after file indexing."
+      "Important paths will appear after file analysis."
     ),
     "",
     "## Public API and symbols",
@@ -945,7 +1118,7 @@ function buildReadmeDraft(context: Awaited<ReturnType<typeof loadDocsContext>>) 
       ? `${testFileCount} test file${
           testFileCount === 1 ? "" : "s"
         } were detected. Use these tests to guide examples, expected behavior, and edge-case documentation.`
-      : "No test files were detected from the indexed repository paths.",
+      : "No test files were detected from the analyzed repository paths.",
     "",
     `Generated files detected: ${generatedFileCount}.`,
     "",
@@ -956,7 +1129,7 @@ function buildReadmeDraft(context: Awaited<ReturnType<typeof loadDocsContext>>) 
     "- Document important paths and module responsibilities in more detail.",
     "- Connect test cases to behavior notes and edge cases.",
     "",
-    "<!-- Generated by DevLens AI deterministic documentation draft. -->"
+    "<!-- Generated by DevLens AI repository documentation draft. -->"
   ].join("\n");
 
   return {
@@ -978,7 +1151,7 @@ function describePathResponsibility(path: string) {
   if (lowerPath.startsWith("apps/")) return "application boundary";
   if (lowerPath.startsWith("packages/")) return "shared package boundary";
   if (lowerPath.startsWith("src/")) return "core source module";
-  return "indexed repository component";
+  return "repository component";
 }
 
 function buildModuleResponsibilityLines(files: Array<{ path: string }>) {
@@ -1012,13 +1185,13 @@ function buildArchitectureRiskLines(context: Awaited<ReturnType<typeof loadDocsC
     risks.push("No conventionally important paths were detected, so architecture entry points may need manual annotation.");
   }
   if (!context.exportedSymbols.length) {
-    risks.push("No exported symbols were identified, which limits deterministic public API documentation.");
+    risks.push("No exported symbols were identified, which limits public API documentation.");
   }
   if (!context.connectedSymbols.length) {
-    risks.push("No symbol relationships were indexed, so dependency flow is currently sparse.");
+    risks.push("No symbol relationships were found, so dependency flow is currently sparse.");
   }
   if (!context.testFileCount) {
-    risks.push("No test files were detected from indexed paths, leaving behavior and edge-case documentation without test anchors.");
+    risks.push("No test files were detected from analyzed paths, leaving behavior and edge-case documentation without test anchors.");
   }
   if (context.generatedFileCount) {
     risks.push(`${context.generatedFileCount} generated file${context.generatedFileCount === 1 ? "" : "s"} were detected and should be separated from hand-authored architecture notes.`);
@@ -1054,7 +1227,7 @@ function buildArchitectureNotes(context: Awaited<ReturnType<typeof loadDocsConte
     .slice(0, 8)
     .map(
       (symbol) =>
-        `\`${symbol.name}\` (${symbol.kind}) in \`${symbol.filePath}\` has ${symbol.connectionCount} indexed link${
+        `\`${symbol.name}\` (${symbol.kind}) in \`${symbol.filePath}\` has ${symbol.connectionCount} relationship${
           symbol.connectionCount === 1 ? "" : "s"
         }.`
     );
@@ -1072,7 +1245,7 @@ function buildArchitectureNotes(context: Awaited<ReturnType<typeof loadDocsConte
     "",
     "## Language and stack signals",
     "",
-    markdownList(languageLines, "Language signals will appear after indexing."),
+    markdownList(languageLines, "Language signals will appear after analysis."),
     "",
     `Framework signal: ${
       repository.detectedFrameworks.length
@@ -1082,13 +1255,13 @@ function buildArchitectureNotes(context: Awaited<ReturnType<typeof loadDocsConte
     "",
     "## Important paths",
     "",
-    markdownList(importantPathLines, "Important paths will appear after file indexing."),
+    markdownList(importantPathLines, "Important paths will appear after file analysis."),
     "",
     "## Module responsibility guesses",
     "",
     markdownList(
       responsibilityLines,
-      "Module responsibilities need manual annotation once more paths are indexed."
+      "Module responsibilities need manual annotation once more paths are analyzed."
     ),
     "",
     "## Symbol architecture signals",
@@ -1116,7 +1289,7 @@ function buildArchitectureNotes(context: Awaited<ReturnType<typeof loadDocsConte
     "",
     markdownList(
       riskLines,
-      "No deterministic architecture gaps were detected from the current signals."
+      "No architecture gaps were detected from the current repository signals."
     ),
     "",
     "## Next architecture documentation steps",
@@ -1126,7 +1299,7 @@ function buildArchitectureNotes(context: Awaited<ReturnType<typeof loadDocsConte
     "- Link highly connected symbols to their callers, owners, and expected runtime behavior.",
     "- Separate generated files, test fixtures, and hand-authored source in the architecture narrative.",
     "",
-    "<!-- Generated by DevLens AI deterministic architecture notes. -->"
+    "<!-- Generated by DevLens AI architecture notes. -->"
   ].join("\n");
 
   return {
@@ -1208,7 +1381,7 @@ export class RepositoriesController {
           status: "FAILED",
           currentStep: "queue_unavailable",
           progress: 100,
-          errorMessage: error instanceof Error ? error.message : "Unable to enqueue repository analysis job.",
+          errorMessage: error instanceof Error ? error.message : "Unable to start repository analysis.",
           finishedAt: new Date()
         }
       });
@@ -1219,7 +1392,7 @@ export class RepositoriesController {
           analysisStatus: "FAILED"
         }
       });
-      throw new BadRequestException("Repository was created, but the analysis queue is unavailable. Start Redis and retry.");
+      throw new BadRequestException("Repository was created, but the analysis service is unavailable. Start Redis and retry.");
     } finally {
       await cloneQueue.close().catch(() => undefined);
     }
@@ -1466,8 +1639,8 @@ export class RepositoriesController {
         {
           title: "Key Files",
           body: keyFileNames.length
-            ? `Start with ${keyFileNames.join(", ")}. These paths look central based on repository conventions and indexed structure.`
-            : "Key files will appear once the repository tree is indexed."
+            ? `Start with ${keyFileNames.join(", ")}. These paths look central based on repository conventions and analyzed structure.`
+            : "Key files will appear once the repository tree is ready."
         },
         {
           title: "Public Symbols",
@@ -1479,7 +1652,7 @@ export class RepositoriesController {
           title: "Testing Signals",
           body: context.testFileCount
             ? `${context.testFileCount} test file${context.testFileCount === 1 ? "" : "s"} were detected. Test coverage signals can guide usage examples and behavior notes.`
-            : "No test files were detected from the indexed paths."
+            : "No test files were detected from the analyzed paths."
         }
       ],
       queuedSections: DOCS_QUEUED_SECTIONS
@@ -1493,6 +1666,27 @@ export class RepositoriesController {
     return context.understanding;
   }
 
+  @Post(":id/guide/enhance")
+  async enhanceGuide(@Param("id") id: string): Promise<GuideEnhanceResponse> {
+    const context = await loadDocsContext(id);
+    const assistantContext = buildGuideEnhancementContext(context);
+    const answer = await createAssistantAnswer(
+      [
+        "Improve the Repository Guide summary for this repository.",
+        "Use only the supplied repository facts and cited files.",
+        "Write one concise paragraph that names the real product/domain, main capabilities, architecture shape, and uncertainty if evidence is weak.",
+        "Do not invent file paths."
+      ].join(" "),
+      assistantContext
+    );
+
+    return buildGuideEnhanceResponse({
+      repositoryId: id,
+      understanding: context.understanding,
+      answer
+    });
+  }
+
   @Post(":id/docs/readme-draft")
   async readmeDraft(@Param("id") id: string) {
     const context = await loadDocsContext(id);
@@ -1503,7 +1697,7 @@ export class RepositoriesController {
       title: draft.title,
       markdown: draft.markdown,
       generatedAt: new Date().toISOString(),
-      source: "deterministic"
+      source: "file-backed"
     };
   }
 
@@ -1517,7 +1711,7 @@ export class RepositoriesController {
       title: draft.title,
       markdown: draft.markdown,
       generatedAt: new Date().toISOString(),
-      source: "deterministic"
+      source: "file-backed"
     };
   }
 

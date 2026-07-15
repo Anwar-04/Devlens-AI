@@ -110,6 +110,7 @@ export interface AssistantContext {
 export interface AssistantAskRequest {
   question: string;
   context: AssistantContext;
+  requestId?: string;
 }
 
 export interface AssistantAskResponse {
@@ -117,6 +118,13 @@ export interface AssistantAskResponse {
   citations: AssistantCitation[];
   mode: "provider" | "fallback";
   fallbackReason?: "missing_credentials" | "provider_error" | "weak_citations";
+  providerMetadata?: {
+    provider: "openai" | "gemini";
+    model: string;
+    requestId?: string;
+    attempts?: number;
+    usedFallbackModel?: boolean;
+  };
 }
 
 export { EMBEDDING_DIMENSIONS, generateEmbedding } from "./embeddings.js";

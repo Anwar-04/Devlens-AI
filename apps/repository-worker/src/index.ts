@@ -17,6 +17,16 @@ const REDIS_URL = process.env.REDIS_URL ?? "redis://localhost:6379";
 const QDRANT_URL = process.env.QDRANT_URL ?? "http://localhost:6333";
 const workerName = "repository-worker";
 const MAX_FILES = Number(process.env.REPOSITORY_MAX_FILES ?? 5000);
+const V1_MAX_ANALYZED_FILES = Number(
+  process.env.REPOSITORY_V1_MAX_ANALYZED_FILES ?? 1200,
+);
+const V1_MAX_SYMBOLS = Number(process.env.REPOSITORY_V1_MAX_SYMBOLS ?? 3000);
+const V1_MAX_SOURCE_RECORDS = Number(
+  process.env.REPOSITORY_V1_MAX_SOURCE_RECORDS ?? 2500,
+);
+const V1_MAX_SYMBOLS_PER_FILE = Number(
+  process.env.REPOSITORY_V1_MAX_SYMBOLS_PER_FILE ?? 80,
+);
 const MAX_FILE_SIZE_BYTES = Number(
   process.env.REPOSITORY_MAX_FILE_SIZE_BYTES ?? 1_000_000,
 );
@@ -26,6 +36,13 @@ const MAX_CHUNK_FILE_SIZE_BYTES = Number(
 const CHUNK_LINE_COUNT = Number(process.env.KNOWLEDGE_CHUNK_LINE_COUNT ?? 120);
 const CHUNK_LINE_OVERLAP = Number(
   process.env.KNOWLEDGE_CHUNK_LINE_OVERLAP ?? 20,
+);
+const DB_WRITE_BATCH_SIZE = Number(process.env.REPOSITORY_DB_WRITE_BATCH_SIZE ?? 500);
+const DB_TRANSACTION_TIMEOUT_MS = Number(
+  process.env.REPOSITORY_DB_TRANSACTION_TIMEOUT_MS ?? 60_000,
+);
+const DB_TRANSACTION_MAX_WAIT_MS = Number(
+  process.env.REPOSITORY_DB_TRANSACTION_MAX_WAIT_MS ?? 10_000,
 );
 
 const IGNORED_FOLDERS = new Set([
@@ -47,15 +64,34 @@ const GENERATED_FILE_PATTERNS = [
   /package-lock\.json$/,
   /pnpm-lock\.yaml$/,
   /yarn\.lock$/,
+  /(^|\/)bun\.lockb?$/,
   /\.min\.(js|css)$/,
   /dist\//,
   /build\//,
+  /(^|\/)snapshots?\//,
+  /(^|\/)generated\//,
 ];
 
 const TEST_FILE_PATTERNS = [
   /(^|\/)(__tests__|tests?)\//,
   /\.(test|spec)\.(ts|tsx|js|jsx|py)$/,
   /_test\.go$/,
+];
+
+const LOW_VALUE_FILE_PATTERNS = [
+  /(^|\/)(fixtures?|examples?|samples?|demo|demos|e2e|benchmarks?)\//i,
+  /(^|\/)(public|static|assets|images?|uploads?|media)\//i,
+  /(^|\/)(migrations?|snapshots?)\//i,
+  /\.(png|jpe?g|gif|webp|svg|ico|pdf|zip|gz|mp4|mov|woff2?|ttf)$/i,
+  /(package-lock|pnpm-lock|yarn\.lock|bun\.lockb?)$/i,
+];
+
+const HIGH_SIGNAL_FILE_PATTERNS = [
+  /(^|\/)README(\.[\w-]+)?$/i,
+  /(^|\/)(package\.json|pyproject\.toml|requirements\.txt|pom\.xml|build\.gradle|go\.mod|cargo\.toml)$/i,
+  /(^|\/)(tsconfig|vite|next|nuxt|svelte|astro|webpack|rollup|eslint|prettier|drizzle|prisma|tailwind|postcss)\.config\./i,
+  /(^|\/)(src|app|apps|packages|services|controllers|routes|modules|lib)\//i,
+  /(^|\/)(server|index|main|app)\.(ts|tsx|js|jsx|mjs|cjs)$/i,
 ];
 
 const EXTENSION_MAP: Record<string, string> = {
@@ -148,6 +184,49 @@ function isIgnoredDirectory(name: string): boolean {
 
 function matchesAny(value: string, patterns: RegExp[]): boolean {
   return patterns.some((pattern) => pattern.test(value));
+}
+
+function getPathDepth(filePath: string) {
+  return filePath.split("/").length;
+}
+
+function scoreFileForV1(file: FileEntry): number {
+  let score = 0;
+  const filePath = file.path;
+  const basename = path.basename(filePath).toLowerCase();
+
+  if (matchesAny(filePath, HIGH_SIGNAL_FILE_PATTERNS)) score += 120;
+  if (/^readme(\.|$)/i.test(basename)) score += 160;
+  if (basename === "package.json") score += 120;
+  if (file.language === "TypeScript" || file.language === "JavaScript") score += 45;
+  if (file.language === "Markdown") score += 35;
+  if (file.language === "JSON" && /package\.json$|tsconfig/i.test(filePath)) score += 25;
+  if (file.isTest) score -= 80;
+  if (file.isGenerated) score -= 120;
+  if (matchesAny(filePath, LOW_VALUE_FILE_PATTERNS)) score -= 100;
+  if (file.sizeBytes > 150_000) score -= 40;
+  if (file.sizeBytes > 400_000) score -= 80;
+  score -= Math.min(40, getPathDepth(filePath) * 4);
+
+  return score;
+}
+
+function prioritizeFilesForV1(files: FileEntry[]) {
+  return [...files].sort((left, right) => {
+    const scoreDelta = scoreFileForV1(right) - scoreFileForV1(left);
+    if (scoreDelta !== 0) return scoreDelta;
+    const sizeDelta = left.sizeBytes - right.sizeBytes;
+    if (sizeDelta !== 0) return sizeDelta;
+    return left.path.localeCompare(right.path);
+  });
+}
+
+function applyV1FileCaps(files: FileEntry[]) {
+  const prioritized = prioritizeFilesForV1(files);
+  return {
+    files: prioritized.slice(0, V1_MAX_ANALYZED_FILES),
+    largeRepoMode: files.length > V1_MAX_ANALYZED_FILES,
+  };
 }
 
 export function detectFrameworks(repoPath: string): string[] {
@@ -471,10 +550,18 @@ function attachSymbolReferences(symbols: SymbolEntry[]): void {
 export function extractSymbols(
   repoPath: string,
   files: FileEntry[],
+  options: {
+    maxSymbols?: number;
+    maxSymbolsPerFile?: number;
+  } = {},
 ): SymbolEntry[] {
   const symbols: SymbolEntry[] = [];
+  const maxSymbols = options.maxSymbols ?? Number.POSITIVE_INFINITY;
+  const maxSymbolsPerFile =
+    options.maxSymbolsPerFile ?? Number.POSITIVE_INFINITY;
 
   for (const file of files) {
+    if (symbols.length >= maxSymbols) break;
     if (!shouldChunkFile(file) || !isTypeScriptOrJavaScript(file)) continue;
 
     const fullPath = path.join(repoPath, file.path);
@@ -488,7 +575,11 @@ export function extractSymbols(
       true,
       getScriptKind(file.path),
     );
-    symbols.push(...extractDeclarationSymbols(sourceFile, file.path));
+    const fileSymbols = extractDeclarationSymbols(sourceFile, file.path).slice(
+      0,
+      maxSymbolsPerFile,
+    );
+    symbols.push(...fileSymbols.slice(0, maxSymbols - symbols.length));
   }
 
   attachSymbolReferences(symbols);
@@ -621,14 +712,188 @@ function buildKnowledgeChunks(
   return chunks;
 }
 
+export function dedupeKnowledgeChunks(
+  chunks: KnowledgeChunkEntry[],
+): KnowledgeChunkEntry[] {
+  const seen = new Set<string>();
+  return chunks.filter((chunk) => {
+    const key = [
+      chunk.filePath,
+      chunk.startLine,
+      chunk.endLine,
+      chunk.contentHash,
+    ].join(":");
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function scoreSourceRecordForV1(chunk: KnowledgeChunkEntry) {
+  let score = 0;
+  const file: FileEntry = {
+    path: chunk.filePath,
+    language: chunk.language,
+    sizeBytes: chunk.content.length,
+    hash: chunk.contentHash,
+    isGenerated: false,
+    isTest: matchesAny(chunk.filePath, TEST_FILE_PATTERNS),
+  };
+
+  score += scoreFileForV1(file);
+  if (chunk.chunkKind === "FILE") score += 30;
+  if (chunk.chunkKind === "SYMBOL") score += 15;
+  if (chunk.startLine <= 80) score += 10;
+  return score;
+}
+
+function prioritizeSourceRecordsForV1(chunks: KnowledgeChunkEntry[]) {
+  return [...chunks].sort((left, right) => {
+    const scoreDelta = scoreSourceRecordForV1(right) - scoreSourceRecordForV1(left);
+    if (scoreDelta !== 0) return scoreDelta;
+    const pathDelta = left.filePath.localeCompare(right.filePath);
+    if (pathDelta !== 0) return pathDelta;
+    return left.startLine - right.startLine;
+  });
+}
+
+function applyV1SourceRecordCaps(chunks: KnowledgeChunkEntry[]) {
+  const deduped = dedupeKnowledgeChunks(chunks);
+  return prioritizeSourceRecordsForV1(deduped).slice(0, V1_MAX_SOURCE_RECORDS);
+}
+
+async function runInBatches<T>(
+  items: T[],
+  handler: (batch: T[]) => Promise<unknown>,
+) {
+  for (let index = 0; index < items.length; index += DB_WRITE_BATCH_SIZE) {
+    const batch = items.slice(index, index + DB_WRITE_BATCH_SIZE);
+    if (batch.length) {
+      await handler(batch);
+    }
+  }
+}
+
+function getCommandErrorText(error: unknown) {
+  if (!error || typeof error !== "object") return "Unknown Git error.";
+  const stderr = (error as { stderr?: Buffer | string }).stderr;
+  const stdout = (error as { stdout?: Buffer | string }).stdout;
+  const message =
+    (typeof stderr === "string" ? stderr : stderr?.toString("utf8")) ||
+    (typeof stdout === "string" ? stdout : stdout?.toString("utf8")) ||
+    (error as { message?: string }).message ||
+    "Unknown Git error.";
+
+  return message.replace(/\s+/g, " ").trim();
+}
+
+function redactSecret(value: string, secret?: string) {
+  return secret ? value.split(secret).join("[redacted]") : value;
+}
+
+function buildAuthenticatedGitHubUrl(url: string) {
+  const token = process.env.GITHUB_TOKEN?.trim();
+  if (!token) return { cloneUrl: url, token: undefined };
+  try {
+    const parsed = new URL(url);
+    if (parsed.hostname !== "github.com") {
+      return { cloneUrl: url, token: undefined };
+    }
+    parsed.username = "x-access-token";
+    parsed.password = token;
+    return { cloneUrl: parsed.toString(), token };
+  } catch {
+    return { cloneUrl: url, token: undefined };
+  }
+}
+
+export function classifyCloneFailure(message: string) {
+  const lower = message.toLowerCase();
+  if (
+    lower.includes("repository not found") ||
+    lower.includes("not found") ||
+    lower.includes("could not read username") ||
+    lower.includes("authentication failed") ||
+    lower.includes("terminal prompts disabled")
+  ) {
+    return "Repository is private, missing, or the URL requires GitHub access. Use a public repository URL, verify the repo name, or configure GITHUB_TOKEN for private repositories.";
+  }
+  if (
+    lower.includes("could not resolve host") ||
+    lower.includes("failed to connect") ||
+    lower.includes("connection timed out") ||
+    lower.includes("network is unreachable") ||
+    lower.includes("early eof")
+  ) {
+    return "GitHub could not be reached from the analysis worker. Check network access and retry.";
+  }
+  if (
+    lower.includes("invalid") ||
+    lower.includes("unsupported url protocol") ||
+    lower.includes("unable to parse")
+  ) {
+    return "The repository URL is not valid. Use a GitHub URL like https://github.com/owner/repository.";
+  }
+  return "Git could not clone this repository. Verify the repository URL, access, and network connection, then retry.";
+}
+
+function buildWorkerErrorMessage(error: unknown) {
+  const rawMessage = error instanceof Error ? error.message : String(error);
+  if (rawMessage.startsWith("Git clone failed")) {
+    return classifyCloneFailure(rawMessage);
+  }
+  if (
+    rawMessage.includes("P2028") ||
+    rawMessage.includes("Transaction already closed") ||
+    rawMessage.includes("Transaction not found") ||
+    rawMessage.includes("expired transaction") ||
+    rawMessage.includes("transaction timeout")
+  ) {
+    return "This repository is large and analysis timed out while saving results. Retry after increasing worker save limits or use a smaller repository.";
+  }
+  if (
+    rawMessage.includes("Unique constraint failed") ||
+    rawMessage.includes("knowledgeChunk.createMany")
+  ) {
+    return "Repository analysis found duplicate source records while saving results. Retry analysis after refreshing the worker.";
+  }
+  return "Repository analysis failed. Verify the repository URL and local services, then retry.";
+}
+
 function cloneRepository(url: string, targetPath: string): void {
-  execFileSync(
-    "git",
-    ["clone", "--depth", "1", "--single-branch", url, targetPath],
-    {
-      stdio: "ignore",
-    },
-  );
+  const maxAttempts = 2;
+  let lastError = "Unknown Git error.";
+  const { cloneUrl, token } = buildAuthenticatedGitHubUrl(url);
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      execFileSync(
+        "git",
+        ["clone", "--depth", "1", "--single-branch", cloneUrl, targetPath],
+        {
+          stdio: "pipe",
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            GIT_TERMINAL_PROMPT: "0",
+          },
+        },
+      );
+      return;
+    } catch (error) {
+      lastError = redactSecret(getCommandErrorText(error), token);
+      if (fs.existsSync(targetPath)) {
+        fs.rmSync(targetPath, { recursive: true, force: true });
+      }
+      if (attempt < maxAttempts) {
+        console.warn(
+          `[Worker] Git clone attempt ${attempt} failed, retrying: ${classifyCloneFailure(lastError)}`,
+        );
+      }
+    }
+  }
+
+  throw new Error(`Git clone failed after ${maxAttempts} attempts: ${lastError}`);
 }
 
 async function processCloneJob(payload: CloneJobPayload) {
@@ -675,7 +940,8 @@ async function processCloneJob(payload: CloneJobPayload) {
       },
     });
 
-    const files = crawlDirectory(tempRepoDir, tempRepoDir);
+    const crawledFiles = crawlDirectory(tempRepoDir, tempRepoDir);
+    const { files, largeRepoMode } = applyV1FileCaps(crawledFiles);
 
     await db.analysisJob.update({
       where: { id: jobId },
@@ -701,9 +967,14 @@ async function processCloneJob(payload: CloneJobPayload) {
       },
     });
 
-    const symbols = extractSymbols(tempRepoDir, files);
+    const symbols = extractSymbols(tempRepoDir, files, {
+      maxSymbols: V1_MAX_SYMBOLS,
+      maxSymbolsPerFile: V1_MAX_SYMBOLS_PER_FILE,
+    });
     const symbolReferences = buildSymbolReferences(symbols);
-    const knowledgeChunks = buildKnowledgeChunks(tempRepoDir, files, symbols);
+    const knowledgeChunks = applyV1SourceRecordCaps(
+      buildKnowledgeChunks(tempRepoDir, files, symbols),
+    );
 
     await db.analysisJob.update({
       where: { id: jobId },
@@ -713,129 +984,141 @@ async function processCloneJob(payload: CloneJobPayload) {
       },
     });
 
-    await db.$transaction(async (tx) => {
-      await tx.knowledgeChunk.deleteMany({ where: { repositoryId } });
-      await tx.symbolReference.deleteMany({ where: { repositoryId } });
-      await tx.symbol.deleteMany({ where: { repositoryId } });
-      await tx.repositoryFile.deleteMany({ where: { repositoryId } });
-      await tx.repositoryFile.createMany({
-        data: files.map((file) => ({
-          repositoryId,
-          path: file.path,
-          language: file.language,
-          sizeBytes: file.sizeBytes,
-          hash: file.hash,
-          isGenerated: file.isGenerated,
-          isTest: file.isTest,
-        })),
-      });
+    await db.$transaction(
+      async (tx) => {
+        await tx.knowledgeChunk.deleteMany({ where: { repositoryId } });
+        await tx.symbolReference.deleteMany({ where: { repositoryId } });
+        await tx.symbol.deleteMany({ where: { repositoryId } });
+        await tx.repositoryFile.deleteMany({ where: { repositoryId } });
 
-      const savedFiles = await tx.repositoryFile.findMany({
-        where: { repositoryId },
-        select: { id: true, path: true },
-      });
-      const fileIdsByPath = new Map(
-        savedFiles.map((file) => [file.path, file.id]),
-      );
+        await runInBatches(files, (batch) =>
+          tx.repositoryFile.createMany({
+            data: batch.map((file) => ({
+              repositoryId,
+              path: file.path,
+              language: file.language,
+              sizeBytes: file.sizeBytes,
+              hash: file.hash,
+              isGenerated: file.isGenerated,
+              isTest: file.isTest,
+            })),
+          }),
+        );
 
-      if (symbols.length > 0) {
-        await tx.symbol.createMany({
-          data: symbols.map((symbol) => ({
-            repositoryId,
-            fileId: fileIdsByPath.get(symbol.filePath) as string,
-            name: symbol.name,
-            kind: symbol.kind,
-            startLine: symbol.startLine,
-            endLine: symbol.endLine,
-            signature: symbol.signature,
-            visibility: symbol.visibility,
-          })),
+        const savedFiles = await tx.repositoryFile.findMany({
+          where: { repositoryId },
+          select: { id: true, path: true },
         });
-      }
+        const fileIdsByPath = new Map(
+          savedFiles.map((file) => [file.path, file.id]),
+        );
 
-      const savedSymbols = await tx.symbol.findMany({
-        where: { repositoryId },
-        select: {
-          id: true,
-          file: { select: { path: true } },
-          name: true,
-          startLine: true,
-        },
-      });
-      const symbolIdsByKey = new Map(
-        savedSymbols.map((symbol) => [
-          `${symbol.file.path}:${symbol.name}:${symbol.startLine}`,
-          symbol.id,
-        ]),
-      );
+        await runInBatches(symbols, (batch) =>
+          tx.symbol.createMany({
+            data: batch.map((symbol) => ({
+              repositoryId,
+              fileId: fileIdsByPath.get(symbol.filePath) as string,
+              name: symbol.name,
+              kind: symbol.kind,
+              startLine: symbol.startLine,
+              endLine: symbol.endLine,
+              signature: symbol.signature,
+              visibility: symbol.visibility,
+            })),
+          }),
+        );
 
-      if (symbolReferences.length > 0) {
-        await tx.symbolReference.createMany({
-          data: symbolReferences
-            .map((reference) => {
-              const sourceSymbolId = symbolIdsByKey.get(
-                reference.sourceSymbolKey,
-              );
-              const targetSymbolId = symbolIdsByKey.get(
-                reference.targetSymbolKey,
-              );
-              if (!sourceSymbolId || !targetSymbolId) return null;
-              return {
-                repositoryId,
-                sourceSymbolId,
-                targetSymbolId,
-                kind: reference.kind,
-              };
-            })
-            .filter((reference) => reference !== null),
-          skipDuplicates: true,
+        const savedSymbols = await tx.symbol.findMany({
+          where: { repositoryId },
+          select: {
+            id: true,
+            file: { select: { path: true } },
+            name: true,
+            startLine: true,
+          },
         });
-      }
+        const symbolIdsByKey = new Map(
+          savedSymbols.map((symbol) => [
+            `${symbol.file.path}:${symbol.name}:${symbol.startLine}`,
+            symbol.id,
+          ]),
+        );
 
-      if (knowledgeChunks.length > 0) {
-        await tx.knowledgeChunk.createMany({
-          data: knowledgeChunks.map((chunk) => ({
-            repositoryId,
-            fileId: fileIdsByPath.get(chunk.filePath),
-            symbolId: chunk.symbolKey
-              ? symbolIdsByKey.get(chunk.symbolKey)
-              : undefined,
-            chunkKind: chunk.chunkKind,
-            title: chunk.title,
-            path: chunk.filePath,
-            language: chunk.language,
-            startLine: chunk.startLine,
-            endLine: chunk.endLine,
-            content: chunk.content,
-            contentHash: chunk.contentHash,
-            tokenCount: chunk.tokenCount,
-            embedding: chunk.embedding,
-          })),
+        const symbolReferenceRows = symbolReferences
+          .map((reference) => {
+            const sourceSymbolId = symbolIdsByKey.get(
+              reference.sourceSymbolKey,
+            );
+            const targetSymbolId = symbolIdsByKey.get(
+              reference.targetSymbolKey,
+            );
+            if (!sourceSymbolId || !targetSymbolId) return null;
+            return {
+              repositoryId,
+              sourceSymbolId,
+              targetSymbolId,
+              kind: reference.kind,
+            };
+          })
+          .filter((reference) => reference !== null);
+
+        await runInBatches(symbolReferenceRows, (batch) =>
+          tx.symbolReference.createMany({
+            data: batch,
+            skipDuplicates: true,
+          }),
+        );
+
+        await runInBatches(knowledgeChunks, (batch) =>
+          tx.knowledgeChunk.createMany({
+            data: batch.map((chunk) => ({
+              repositoryId,
+              fileId: fileIdsByPath.get(chunk.filePath),
+              symbolId: chunk.symbolKey
+                ? symbolIdsByKey.get(chunk.symbolKey)
+                : undefined,
+              chunkKind: chunk.chunkKind,
+              title: chunk.title,
+              path: chunk.filePath,
+              language: chunk.language,
+              startLine: chunk.startLine,
+              endLine: chunk.endLine,
+              content: chunk.content,
+              contentHash: chunk.contentHash,
+              tokenCount: chunk.tokenCount,
+              embedding: chunk.embedding,
+            })),
+            skipDuplicates: true,
+          }),
+        );
+
+        await tx.repository.update({
+          where: { id: repositoryId },
+          data: {
+            cloneStatus: "COMPLETED",
+            analysisStatus: "COMPLETED",
+            detectedLanguages,
+            detectedFrameworks,
+            fileCount: files.length,
+            totalSizeBytes,
+          },
         });
-      }
 
-      await tx.repository.update({
-        where: { id: repositoryId },
-        data: {
-          cloneStatus: "COMPLETED",
-          analysisStatus: "COMPLETED",
-          detectedLanguages,
-          detectedFrameworks,
-          fileCount: files.length,
-          totalSizeBytes,
-        },
-      });
-
-      await tx.analysisJob.update({
-        where: { id: jobId },
-        data: {
-          status: "COMPLETED",
-          currentStep: "completed",
-          progress: 100,
-          finishedAt: new Date(),
-        },
-      });
-    });
+        await tx.analysisJob.update({
+          where: { id: jobId },
+          data: {
+            status: "COMPLETED",
+            currentStep: "completed",
+            progress: 100,
+            finishedAt: new Date(),
+          },
+        });
+      },
+      {
+        maxWait: DB_TRANSACTION_MAX_WAIT_MS,
+        timeout: DB_TRANSACTION_TIMEOUT_MS,
+      },
+    );
 
     const savedKnowledgeChunks = await db.knowledgeChunk.findMany({
       where: { repositoryId },
@@ -873,10 +1156,10 @@ async function processCloneJob(payload: CloneJobPayload) {
     });
 
     console.log(
-      `[Worker] Completed job ${jobId}: ${files.length} files, ${symbols.length} symbols, ${knowledgeChunks.length} knowledge chunks, ${qdrantPoints.length} vectors, ${detectedLanguages.join(", ")}`,
+      `[Worker] Completed job ${jobId}: ${files.length}/${crawledFiles.length} files, ${symbols.length} symbols, ${knowledgeChunks.length} knowledge chunks, ${qdrantPoints.length} vectors, ${detectedLanguages.join(", ")}${largeRepoMode ? " (large repository mode)" : ""}`,
     );
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = buildWorkerErrorMessage(error);
     console.error(`[Worker] Job ${jobId} failed:`, error);
 
     await db.repository

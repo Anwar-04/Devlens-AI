@@ -59,8 +59,31 @@ Expected local endpoints and services:
 
 Optional provider configuration:
 
-- `OPENAI_API_KEY`: enables enhanced assistant answers from the API service.
+- `AI_PROVIDER`: optional provider selector, either `openai` or `gemini`; defaults to `openai`.
+- `OPENAI_API_KEY`: enables enhanced assistant answers through OpenAI.
 - `OPENAI_MODEL`: optional model override, defaults to `gpt-4.1-mini`.
+- `GEMINI_API_KEY`: enables enhanced assistant answers through Gemini.
+- `GEMINI_MODEL`: optional model override, defaults to `gemini-3.5-flash` in the local helper.
+- `GEMINI_FALLBACK_MODEL`: optional fallback for temporary provider capacity failures, defaults to `gemini-3.1-flash-lite`.
+- `GEMINI_MAX_ATTEMPTS`: optional primary Gemini attempt count, defaults to `3`.
+- `GEMINI_FALLBACK_MAX_ATTEMPTS`: optional fallback Gemini attempt count, defaults to `2`.
+- `GITHUB_TOKEN`: optional backend-only token for analyzing private GitHub repositories. Public repositories do not require it.
+- `REPOSITORY_V1_MAX_ANALYZED_FILES`: optional V1 file cap for large repositories, defaults to `1200`.
+- `REPOSITORY_V1_MAX_SYMBOLS`: optional V1 code-detail cap for large repositories, defaults to `3000`.
+- `REPOSITORY_V1_MAX_SOURCE_RECORDS`: optional V1 source-preview/search cap, defaults to `2500`.
+- `REPOSITORY_V1_MAX_SYMBOLS_PER_FILE`: optional per-file code-detail cap, defaults to `80`.
+- `REPOSITORY_DB_WRITE_BATCH_SIZE`: optional worker save batch size, defaults to `500`.
+- `REPOSITORY_DB_TRANSACTION_TIMEOUT_MS`: optional worker save timeout, defaults to `60000`.
+- `REPOSITORY_DB_TRANSACTION_MAX_WAIT_MS`: optional worker save wait time, defaults to `10000`.
+
+For the local Gemini helper, set the key in your shell before starting the API:
+
+```powershell
+$env:GEMINI_API_KEY="<your-gemini-api-key>"
+$env:GEMINI_MODEL="gemini-3.5-flash"
+$env:GEMINI_FALLBACK_MODEL="gemini-3.1-flash-lite"
+.\apps\api\run-live-api.cmd
+```
 
 ## Phase 10 Validation Checklist
 
@@ -79,12 +102,21 @@ Manual V1 smoke test:
 - `http://localhost:3000` loads.
 - Fresh analysis of `https://github.com/Anwar-04/linkforge-url-shortener` completes.
 - Guide, Files, Search, README preview, selected-file details, guided investigation, walkthrough evidence, completion handoff, Copy recap, and citation open/highlight behavior work.
+
+If port `4000` is already in use, another API process is running. Reuse it, or stop it before starting a new API process:
+
+```powershell
+netstat -ano | findstr :4000
+Stop-Process -Id <PID> -Force
+```
 - Fake `README.routes.js` or `README.controller.js` suggestions do not appear.
 
 ## Known Limitations
 
 - V1 is scoped to repository understanding, not editing code or opening pull requests.
 - The visible assistant is file-backed from current repository data; provider-backed answers are optional and must preserve citations.
+- Private repositories require a local `GITHUB_TOKEN` for the repository worker; public repositories do not.
+- Very large repositories use a prioritized V1 analysis that focuses on useful onboarding files first.
 - Older analyses may need re-analysis for README/docs/config preview coverage.
 - Citation highlighting depends on available line ranges.
 - Hidden backend surfaces for future generated docs, diagrams, and provider workflows should not be exposed in V1.

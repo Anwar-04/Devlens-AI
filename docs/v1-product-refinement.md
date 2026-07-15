@@ -6,7 +6,7 @@ Phase 10 froze the file-backed V1 workspace. Phase 11 adds optional provider-bac
 
 The product should solve one problem exceptionally well: help developers understand unfamiliar GitHub repositories in minutes instead of days.
 
-DevLens AI V1 is not a large AI editor, multi-agent platform, documentation suite, graph dashboard, admin product, or autonomous coding agent. Those directions are explicitly out of scope for the visible V1 product.
+DevLens AI V1 is not a large AI editor, multi-agent platform, documentation suite, technical dashboard, admin product, or autonomous coding agent. Those directions are explicitly out of scope for the visible V1 product.
 
 ## Product Vision
 
@@ -108,15 +108,15 @@ These can remain in the codebase or backend, but should not be primary V1 surfac
 
 - README generator.
 - Architecture notes generator.
-- Documentation queue.
+- Documentation workflow console.
 - Agent cards.
-- Separate graph page.
+- Separate relationship map page.
 - Separate docs page.
-- Separate dependency graph page.
+- Separate dependency map page.
 - Intelligence rail.
 - Security button if it is not functional.
-- Knowledge graph or embedding pipeline labels.
-- Architecture Agent, Documentation Agent, Knowledge Graph Agent, Repository Intelligence Agent, or other internal AI service names.
+- Technical pipeline labels.
+- Architecture Agent, Documentation Agent, Repository Intelligence Agent, or other internal AI service names.
 
 ## Backend Capabilities To Keep
 
@@ -167,7 +167,7 @@ Settings should stay out of the main V1 workflow unless it contains real control
 ### Phase 0: Product Direction Lock
 
 - Preserve the frozen V1 layout: left repository status/file tree/filter, center Guide/Files/Search, right DevLens AI assistant.
-- Treat broad agent, documentation, graph, dashboard, admin, billing, and autonomous coding ideas as hidden or V2+ unless explicitly approved.
+- Treat broad agent, documentation, dashboard, admin, billing, and autonomous coding ideas as hidden or V2+ unless explicitly approved.
 - Do not delete useful backend capability just because it is hidden from V1.
 - Keep the visible product focused on repository understanding, file exploration, search, guided investigation, and cited answers.
 - Prefer file-backed behavior first; add provider-backed answers only where they improve explanation quality and keep citations/fallbacks.
@@ -257,8 +257,8 @@ If a feature does not directly help with those outcomes, it should be hidden or 
 - Multiple visible AI agents.
 - Admin dashboards.
 - Billing, organizations, usage analytics, or team management.
-- Complex graph-first navigation.
-- Public architecture or dependency graph pages as primary surfaces.
+- Complex relationship-first navigation.
+- Public architecture or dependency map pages as primary surfaces.
 - New database tables for generated docs.
 - OpenAI/provider calls before the V1 file-backed experience is validated.
 - Exposing internal services or future backend workflow labels.

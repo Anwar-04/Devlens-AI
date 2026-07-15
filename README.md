@@ -15,7 +15,7 @@ V1 is the stable repository-understanding checkpoint. Phase 11 adds an optional 
 - Use the right-panel DevLens AI assistant for guided onboarding, walkthrough evidence, completion handoff, shareable recap, and clickable citations.
 - Open citations in the Files tab with line highlighting when line numbers are available.
 
-V1 is not a multi-agent command center, documentation suite, graph dashboard, IDE replacement, code editor, billing/admin product, or autonomous coding agent. Some backend capabilities remain in the repo for later phases, but they are intentionally hidden from the V1 surface.
+V1 is not a multi-agent command center, documentation suite, technical dashboard, IDE replacement, code editor, billing/admin product, or autonomous coding agent. Some backend capabilities remain in the repo for later phases, but they are intentionally hidden from the V1 surface.
 
 ## Local Development
 
@@ -48,13 +48,43 @@ Required local services:
 
 Optional provider configuration:
 
-- `OPENAI_API_KEY`: enables enhanced assistant answers from the API service.
+- `AI_PROVIDER`: optional provider selector, either `openai` or `gemini`; defaults to `openai`.
+- `OPENAI_API_KEY`: enables enhanced assistant answers through OpenAI.
 - `OPENAI_MODEL`: optional model override, defaults to `gpt-4.1-mini`.
+- `GEMINI_API_KEY`: enables enhanced assistant answers through Gemini.
+- `GEMINI_MODEL`: optional model override, defaults to `gemini-3.5-flash` in the local helper.
+- `GEMINI_FALLBACK_MODEL`: optional fallback for temporary provider capacity failures, defaults to `gemini-3.1-flash-lite`.
+- `GEMINI_MAX_ATTEMPTS`: optional primary Gemini attempt count, defaults to `3`.
+- `GEMINI_FALLBACK_MAX_ATTEMPTS`: optional fallback Gemini attempt count, defaults to `2`.
+- `GITHUB_TOKEN`: optional backend-only token for analyzing private GitHub repositories. Public repositories do not require it.
+- `REPOSITORY_V1_MAX_ANALYZED_FILES`: optional V1 file cap for large repositories, defaults to `1200`.
+- `REPOSITORY_V1_MAX_SYMBOLS`: optional V1 code-detail cap for large repositories, defaults to `3000`.
+- `REPOSITORY_V1_MAX_SOURCE_RECORDS`: optional V1 source-preview/search cap, defaults to `2500`.
+- `REPOSITORY_V1_MAX_SYMBOLS_PER_FILE`: optional per-file code-detail cap, defaults to `80`.
+- `REPOSITORY_DB_WRITE_BATCH_SIZE`: optional worker save batch size, defaults to `500`.
+- `REPOSITORY_DB_TRANSACTION_TIMEOUT_MS`: optional worker save timeout, defaults to `60000`.
+- `REPOSITORY_DB_TRANSACTION_MAX_WAIT_MS`: optional worker save wait time, defaults to `10000`.
+
+For the local Gemini helper, set the key in your shell before starting the API:
+
+```powershell
+$env:GEMINI_API_KEY="<your-gemini-api-key>"
+$env:GEMINI_MODEL="gemini-3.5-flash"
+$env:GEMINI_FALLBACK_MODEL="gemini-3.1-flash-lite"
+.\apps\api\run-live-api.cmd
+```
 
 API health:
 
 ```bash
 curl http://localhost:4000/health
+```
+
+If port `4000` is already in use, another API process is running. Reuse it, or stop it before starting a new API process:
+
+```powershell
+netstat -ano | findstr :4000
+Stop-Process -Id <PID> -Force
 ```
 
 ## Validation
@@ -80,7 +110,8 @@ For older repository analyses, run analysis again if README, docs, or config pre
 
 ## Known Limitations
 
-- Only public GitHub repository analysis is supported in the V1 demo flow.
+- Public GitHub repositories work without credentials. Private repositories require a local `GITHUB_TOKEN` for the repository worker.
+- Very large repositories use a prioritized V1 analysis that focuses on useful onboarding files first.
 - Answers are grounded in locally analyzed repository data; provider-backed explanation quality is optional and falls back cleanly when credentials are missing or a provider request fails.
 - README/docs/config source previews may require fresh analysis for repositories analyzed before the preview coverage fix.
 - Citation line highlighting depends on stored line ranges.
