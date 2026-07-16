@@ -2785,7 +2785,6 @@ function FileSourcePreview({
   const sourceSnippet = getFileSourceSnippet(source);
   const hasSourceLines = Boolean(sourceSnippet);
   const sourceLineCount = source?.file.previewLines.length ?? 0;
-  const sourcePreviewHeight = "min(70vh, 760px)";
   const selectedPath = selectedNode?.kind === "file" ? selectedNode.path : "";
   const missingPreviewMessage = isDocsOrConfigPath(selectedPath)
     ? "This looks like a README, docs, or config file from an older analysis. Analyze the repository again to refresh its preview, or open a nearby guide file."
@@ -2926,7 +2925,7 @@ function FileSourcePreview({
 
   return (
     <div className="min-h-0 rounded-md border border-line bg-white shadow-sm">
-      <div className="sticky top-0 z-20 border-b border-line bg-white/95 px-4 py-3 backdrop-blur">
+      <div className="border-b border-line bg-white px-4 py-3">
         <div className="mb-3 flex min-w-0 flex-wrap items-center gap-1.5 text-xs text-graphite">
           <span className="font-medium text-graphite">Repository</span>
           <ChevronRight size={12} />
@@ -3119,7 +3118,7 @@ function FileSourcePreview({
         </div>
 
         <section className="overflow-hidden rounded-md border border-line bg-white shadow-sm">
-          <div className="sticky top-0 z-10 flex items-center justify-between gap-3 border-b border-line bg-[#111827] px-3 py-2 text-slate-100">
+          <div className="flex items-center justify-between gap-3 border-b border-line bg-[#111827] px-3 py-2 text-slate-100">
             <div className="min-w-0">
               <p className="truncate text-sm font-semibold">{selectedNode.path}</p>
               <p className="text-xs text-slate-400">
@@ -3146,8 +3145,7 @@ function FileSourcePreview({
             </div>
           ) : source?.file.previewLines.length ? (
             <div
-              className="overflow-auto bg-[#0f172a] py-3 font-mono text-[13px] leading-6 text-slate-100"
-              style={{ height: sourcePreviewHeight, minHeight: 500 }}
+              className="overflow-x-auto bg-[#0f172a] py-3 font-mono text-[13px] leading-6 text-slate-100"
             >
               {source.file.previewLines.map((line, index) => (
                 <div
@@ -6339,7 +6337,7 @@ export default function Home() {
             }
           >
             <div className="rounded-md border border-line bg-white">
-              <div className="sticky top-0 z-10 border-b border-line bg-white px-4 py-3">
+              <div className="border-b border-line bg-white px-4 py-3">
                 <div className="flex items-center justify-between gap-3">
                   <div className="min-w-0">
                     <p className="font-semibold">File Inspection</p>
