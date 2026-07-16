@@ -10,10 +10,7 @@ import {
   Clock3,
   Copy,
   ExternalLink,
-  FileCode2,
-  Folder,
   FolderOpen,
-  GitPullRequest,
   Loader2,
   Maximize2,
   Network,
@@ -22,7 +19,13 @@ import {
   X,
   Workflow,
   XCircle,
+  type LucideIcon,
 } from "lucide-react";
+import {
+  DevLensIcon,
+  devlensIcons,
+  getExplorerIconMeta,
+} from "./devlens-icons";
 
 type JobStatus = "QUEUED" | "RUNNING" | "COMPLETED" | "FAILED" | "CANCELLED";
 
@@ -405,10 +408,14 @@ const pipelineSteps = [
   { key: "completed", label: "Completed", description: "Workspace is ready" },
 ];
 
-const workspaceTabs: Array<{ key: WorkspaceTab; label: string }> = [
-  { key: "brief", label: "Guide" },
-  { key: "files", label: "Files" },
-  { key: "search", label: "Search" },
+const workspaceTabs: Array<{
+  key: WorkspaceTab;
+  label: string;
+  icon: LucideIcon;
+}> = [
+  { key: "brief", label: "Guide", icon: devlensIcons.product.guide },
+  { key: "files", label: "Files", icon: devlensIcons.product.files },
+  { key: "search", label: "Search", icon: devlensIcons.product.search },
 ];
 
 function formatLineRange(item: { startLine: number; endLine: number }): string {
@@ -2000,7 +2007,7 @@ function buildTechnicalOverviewItems(
       description: "Primary server or application framework signal.",
     },
     {
-      icon: Network,
+      icon: devlensIcons.engineering.database,
       label: "Database",
       value: detectDatabase(summary),
       description: "Detected persistence or data-layer technology.",
@@ -2012,7 +2019,7 @@ function buildTechnicalOverviewItems(
       description: "Auth-related files, symbols, or dependency signals.",
     },
     {
-      icon: FileCode2,
+      icon: devlensIcons.engineering.tests,
       label: "Testing",
       value: summary.architecture.testFileCount ? "Present" : "Light",
       description: summary.architecture.testFileCount
@@ -2022,19 +2029,19 @@ function buildTechnicalOverviewItems(
         : "Few test signals detected in analyzed paths.",
     },
     {
-      icon: Braces,
+      icon: devlensIcons.metrics.complexity,
       label: "Complexity",
       value: inferComplexity(summary),
       description: "Based on file count and discovered code details.",
     },
     {
-      icon: GitPullRequest,
+      icon: devlensIcons.engineering.entryPoint,
       label: "Entry Point",
       value: getEntryPoint(summary),
       description: "Best first implementation or documentation anchor.",
     },
     {
-      icon: Clock3,
+      icon: devlensIcons.metrics.onboarding,
       label: "Estimated Onboarding",
       value: estimateOnboarding(summary),
       description: "Approximate time for a developer to get oriented.",
@@ -2155,6 +2162,62 @@ function buildCoreComponents(summary: DocsSummaryResponse): CoreComponent[] {
     .slice(0, 8);
 }
 
+function buildArchitectureFlow(summary: DocsSummaryResponse): Array<{
+  label: string;
+  detail: string;
+  icon: LucideIcon;
+}> {
+  const components = buildCoreComponents(summary);
+  const byName = new Map(components.map((component) => [component.name, component]));
+  const flowCandidates = [
+    {
+      name: "UI",
+      label: "Client",
+      detail: byName.get("UI")?.purpose ?? "User-facing screens and views.",
+      icon: devlensIcons.engineering.ui,
+    },
+    {
+      name: "Routes",
+      label: "Routes",
+      detail: "API surfaces",
+      icon: devlensIcons.engineering.route,
+    },
+    {
+      name: "Controllers",
+      label: "Controllers",
+      detail: "Request handling",
+      icon: devlensIcons.engineering.controller,
+    },
+    {
+      name: "Services",
+      label: "Services",
+      detail: "Business logic",
+      icon: devlensIcons.engineering.service,
+    },
+    {
+      name: "Middleware",
+      label: "Middleware",
+      detail: "Auth and validation",
+      icon: devlensIcons.engineering.middlewareSecurity,
+    },
+    {
+      name: "Database",
+      label: "Database",
+      detail: "Persistence",
+      icon: devlensIcons.engineering.database,
+    },
+  ];
+  const supported = flowCandidates.filter((candidate) => byName.has(candidate.name));
+
+  if (supported.length >= 2) return supported;
+
+  return summary.understanding.mainModules.slice(0, 5).map((module) => ({
+    label: module.name,
+    detail: module.purpose,
+    icon: devlensIcons.engineering.architecture,
+  }));
+}
+
 function getSearchResultType(result: SearchResult): string {
   const path = result.path.toLowerCase();
   if (result.symbol?.kind) return getSymbolKindMeta(result.symbol.kind).singular;
@@ -2179,34 +2242,6 @@ function getSearchResultPurpose(result: SearchResult): string {
   return `${result.path} is a ${role.toLowerCase()} file that helps developers ${getPathReason(
     result.path,
   )}. Open the cited lines before following related files.`;
-}
-
-function getFileIconMeta(path: string, kind: ExplorerNode["kind"]) {
-  const name = path.split("/").pop()?.toLowerCase() ?? path.toLowerCase();
-  const normalized = path.toLowerCase();
-
-  if (kind === "folder") {
-    if (normalized.includes("controller")) return { label: "C", tone: "bg-blue-50 text-blue-700 border-blue-200" };
-    if (normalized.includes("route")) return { label: "R", tone: "bg-sky-50 text-sky-700 border-sky-200" };
-    if (normalized.includes("service")) return { label: "S", tone: "bg-emerald-50 text-emerald-700 border-emerald-200" };
-    if (normalized.includes("model")) return { label: "M", tone: "bg-violet-50 text-violet-700 border-violet-200" };
-    return { label: "dir", tone: "bg-amber/10 text-amber border-amber/20" };
-  }
-
-  if (name === "readme.md") return { label: "R", tone: "bg-signal/10 text-signal border-signal/20" };
-  if (name.endsWith(".test.ts") || name.endsWith(".test.js") || name.endsWith(".spec.ts") || name.endsWith(".spec.js")) {
-    return { label: "T", tone: "bg-amber/10 text-amber border-amber/20" };
-  }
-  if (name.endsWith(".tsx") || name.endsWith(".ts")) return { label: "TS", tone: "bg-blue-50 text-blue-700 border-blue-200" };
-  if (name.endsWith(".jsx") || name.endsWith(".js")) return { label: "JS", tone: "bg-yellow-50 text-yellow-700 border-yellow-200" };
-  if (name.endsWith(".json")) return { label: "{}", tone: "bg-emerald-50 text-emerald-700 border-emerald-200" };
-  if (name.endsWith(".md")) return { label: "MD", tone: "bg-slate-100 text-slate-700 border-slate-200" };
-  if (name.includes(".env")) return { label: "ENV", tone: "bg-red-50 text-red-700 border-red-200" };
-  if (/\.(png|jpg|jpeg|gif|svg|webp)$/i.test(name)) return { label: "IMG", tone: "bg-pink-50 text-pink-700 border-pink-200" };
-  if (normalized.includes("config") || normalized.includes("middleware") || normalized.includes("validator")) {
-    return { label: "cfg", tone: "bg-violet-50 text-violet-700 border-violet-200" };
-  }
-  return { label: "file", tone: "bg-cloud text-graphite border-line" };
 }
 
 function describeRepositoryArchitecture(summary: DocsSummaryResponse): string {
@@ -2443,7 +2478,7 @@ function ExplorerTree({
         const isFolder = node.kind === "folder";
         const isExpanded = expanded.has(node.path);
         const isSelected = selectedPath === node.path;
-        const iconMeta = getFileIconMeta(node.path, node.kind);
+        const iconMeta = getExplorerIconMeta(node.path, node.kind);
 
         return (
           <div key={node.path}>
@@ -2467,8 +2502,8 @@ function ExplorerTree({
                   onToggle(node.path);
                 }
               }}
-              className={`group relative w-full rounded px-2 py-1.5 text-left text-sm transition-colors hover:bg-cloud ${
-                isSelected ? "bg-signal/10 text-ink shadow-[inset_2px_0_0_#2563eb]" : ""
+              className={`group relative w-full rounded-md px-2 py-1 text-left text-sm transition-colors hover:bg-cloud ${
+                isSelected ? "bg-signal/5 text-ink ring-1 ring-signal/20" : ""
               }`}
               style={{ paddingLeft: `${8 + depth * 16}px` }}
               title={node.path}
@@ -2486,12 +2521,13 @@ function ExplorerTree({
                 ) : (
                   <span className="w-3.5 shrink-0" />
                 )}
-                <span
-                  className={`grid h-5 min-w-5 shrink-0 place-items-center rounded border px-1 text-[9px] font-bold uppercase ${iconMeta.tone}`}
-                  title={isFolder ? "Folder" : node.language ?? "File"}
-                >
-                  {iconMeta.label}
-                </span>
+                <DevLensIcon
+                  icon={iconMeta.icon}
+                  tone={iconMeta.tone}
+                  size={13}
+                  framed
+                  label={iconMeta.label}
+                />
                 <span
                   className={`min-w-0 truncate ${isFolder ? "font-medium text-ink" : "text-ink"}`}
                 >
@@ -2818,7 +2854,12 @@ function FileSourcePreview({
     return (
       <div className="grid h-full place-items-center rounded-md border border-line bg-white p-6 text-center">
         <div>
-          <FileCode2 className="mx-auto mb-3 text-signal" />
+          <DevLensIcon
+            icon={devlensIcons.product.files}
+            tone="primary"
+            size={24}
+            className="mx-auto mb-3"
+          />
           <p className="font-semibold">Analyze a repository first</p>
           <p className="mt-2 max-w-md text-sm leading-6 text-graphite">
             File previews become available after DevLens indexes repository
@@ -2833,7 +2874,12 @@ function FileSourcePreview({
     return (
       <div className="grid min-h-[560px] place-items-center rounded-md border border-line bg-white p-6 text-center shadow-sm">
         <div className="max-w-xl">
-          <FileCode2 className="mx-auto mb-3 text-signal" />
+          <DevLensIcon
+            icon={devlensIcons.product.files}
+            tone="primary"
+            size={24}
+            className="mx-auto mb-3"
+          />
           <p className="text-lg font-semibold text-ink">Select a file to inspect</p>
           <p className="mt-2 text-sm leading-6 text-graphite">
             DevLens explains purpose, dependencies, important symbols, related files, and suggested next steps once you choose a file.
@@ -2847,7 +2893,11 @@ function FileSourcePreview({
                   onClick={() => onOpenPath(item.path)}
                   className="flex min-w-0 items-center gap-2 rounded-md border border-line bg-cloud px-3 py-2 text-sm font-medium text-graphite transition-colors hover:border-signal hover:bg-white hover:text-ink"
                 >
-                  <FileCode2 size={14} className="shrink-0 text-signal" />
+                  <DevLensIcon
+                    icon={devlensIcons.product.files}
+                    tone="primary"
+                    size={14}
+                  />
                   <span className="truncate">{item.path}</span>
                 </button>
               ))}
@@ -3125,7 +3175,12 @@ function FileSourcePreview({
           ) : (
             <div className="grid min-h-[520px] place-items-center bg-[#0f172a] p-6 text-center text-slate-300">
               <div>
-                <FileCode2 className="mx-auto mb-3 text-signal" />
+                <DevLensIcon
+                  icon={devlensIcons.product.files}
+                  tone="primary"
+                  size={24}
+                  className="mx-auto mb-3"
+                />
                 <p className="font-semibold text-white">No code preview yet</p>
                 <p className="mt-2 max-w-md text-sm leading-6">
                   {missingPreviewMessage}
@@ -3748,8 +3803,8 @@ function SymbolGraphPanel({
     : 0;
 
   return (
-    <div className="rounded-md bg-white">
-      <div className="border-b border-line px-4 py-3">
+    <div className="overflow-hidden rounded-md border border-line bg-white shadow-sm">
+      <div className="border-b border-line bg-white px-4 py-3">
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0">
             <p className="font-semibold">Symbol relationships</p>
@@ -3923,6 +3978,7 @@ function RepoBriefPanel({
     enhancedGuide?.coreFeatures ?? summary?.understanding.coreFeatures ?? [];
   const guideReadingOrder =
     enhancedGuide?.readingOrder ?? summary?.understanding.readingOrder ?? [];
+  const architectureFlow = summary ? buildArchitectureFlow(summary) : [];
 
   return (
     <div className="rounded-md bg-white">
@@ -3940,7 +3996,7 @@ function RepoBriefPanel({
                 type="button"
                 onClick={onEnhanceGuide}
                 disabled={isEnhancingGuide}
-                className="inline-flex h-8 items-center gap-1.5 rounded-md border border-line bg-white px-2 text-xs font-medium text-graphite transition-colors hover:border-signal hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+                className="inline-flex h-8 items-center gap-1.5 rounded-md border border-signal/20 bg-signal/5 px-2 text-xs font-medium text-signal transition-colors hover:border-signal hover:bg-white hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {isEnhancingGuide ? (
                   <Loader2 size={13} className="animate-spin" />
@@ -3950,7 +4006,7 @@ function RepoBriefPanel({
                 Improve summary
               </button>
             ) : null}
-            <FileCode2 size={18} className="text-signal" />
+            <DevLensIcon icon={devlensIcons.guide.overview} tone="primary" size={18} />
           </div>
         </div>
         {guideEnhanceStatus ? (
@@ -3964,7 +4020,12 @@ function RepoBriefPanel({
         {!repositoryReady ? (
           <div className="grid h-full place-items-center rounded-md border border-line bg-white p-6 text-center">
             <div>
-              <FileCode2 className="mx-auto mb-3 text-signal" />
+              <DevLensIcon
+                icon={devlensIcons.product.guide}
+                tone="primary"
+                size={24}
+                className="mx-auto mb-3"
+              />
               <p className="font-semibold">Analyze a repository first</p>
               <p className="mt-2 max-w-md text-sm leading-6 text-graphite">
                 Repository Guide uses repository metadata, files, and code
@@ -3988,17 +4049,17 @@ function RepoBriefPanel({
             {error}
           </div>
         ) : summary ? (
-          <div className="space-y-8">
-            <section className="rounded-md border border-signal/15 bg-white p-6 shadow-sm">
+          <div className="space-y-5">
+            <section className="rounded-md border border-line bg-white p-4 shadow-sm">
               <div className="flex items-start justify-between gap-5">
                 <div className="min-w-0">
                   <p className="text-xs font-semibold uppercase tracking-wide text-signal">
-                    Repository Understanding
+                    Repository Overview
                   </p>
-                  <h2 className="mt-2 text-2xl font-semibold tracking-normal text-ink">
+                  <h2 className="mt-1.5 text-xl font-semibold tracking-normal text-ink">
                     {summary.repository.owner}/{summary.repository.name}
                   </h2>
-                  <p className="mt-3 max-w-4xl text-base leading-7 text-ink">
+                  <p className="mt-2 line-clamp-3 max-w-4xl text-sm leading-6 text-graphite">
                     {guideSummary}
                   </p>
                 </div>
@@ -4013,75 +4074,205 @@ function RepoBriefPanel({
                 </span>
               </div>
 
-              <div className="mt-6 grid gap-4 lg:grid-cols-[minmax(0,1.1fr)_minmax(280px,0.9fr)]">
-                <div className="rounded-md border border-line bg-cloud/40 p-4">
-                  <p className="text-sm font-semibold text-ink">
-                    What this project appears to do
-                  </p>
-                  <p className="mt-2 text-sm leading-6 text-graphite">
-                    {enhancedGuide?.mode === "provider" && enhancedGuide.summary
-                      ? enhancedGuide.summary
-                      : getBusinessPurpose(summary)}
-                  </p>
-                  <div className="mt-4 grid gap-3 md:grid-cols-2">
-                    <div>
-                      <p className="text-xs font-semibold uppercase tracking-wide text-graphite">
-                        Business domain
+              <div className="mt-4 grid gap-3 xl:grid-cols-[minmax(0,1fr)_300px]">
+                <div className="rounded-md border border-line bg-cloud/30 p-3">
+                  <div className="flex items-start gap-3">
+                    <DevLensIcon
+                      icon={devlensIcons.guide.purpose}
+                      tone="primary"
+                      size={16}
+                      framed
+                    />
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold text-ink">
+                        What this project does
                       </p>
-                      <p className="mt-1 text-sm leading-6 text-ink">
+                      <p className="mt-1.5 line-clamp-3 text-sm leading-6 text-graphite">
+                        {enhancedGuide?.mode === "provider" && enhancedGuide.summary
+                          ? enhancedGuide.summary
+                          : getBusinessPurpose(summary)}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                    <div className="rounded-md bg-white px-3 py-2 shadow-sm">
+                      <p className="text-[11px] font-semibold uppercase tracking-wide text-graphite">
+                        Domain
+                      </p>
+                      <p className="mt-1 text-sm font-medium leading-5 text-ink">
                         {guideDomain}
                       </p>
                     </div>
-                    <div>
-                      <p className="text-xs font-semibold uppercase tracking-wide text-graphite">
-                        Architecture
+                    <div className="rounded-md bg-white px-3 py-2 shadow-sm">
+                      <p className="text-[11px] font-semibold uppercase tracking-wide text-graphite">
+                        Structure
                       </p>
-                      <p className="mt-1 text-sm leading-6 text-ink">
+                      <p className="mt-1 line-clamp-2 text-sm font-medium leading-5 text-ink">
                         {guideArchitecture}
                       </p>
                     </div>
                   </div>
                 </div>
 
-                <div className="rounded-md border border-line bg-cloud/40 p-4">
-                  <p className="text-sm font-semibold text-ink">
-                    Recommended reading order
-                  </p>
+                <div className="rounded-md border border-line bg-cloud/30 p-3">
+                  <div className="flex items-center gap-2">
+                    <DevLensIcon
+                      icon={devlensIcons.guide.readingPath}
+                      tone="primary"
+                      size={15}
+                    />
+                    <p className="text-sm font-semibold text-ink">Start here</p>
+                  </div>
                   <div className="mt-3 grid gap-2">
-                    {guideReadingOrder.slice(0, 6).map((item, index) => (
-                      <div
+                    {guideReadingOrder.slice(0, 3).map((item, index) => (
+                      <button
                         key={item.file}
-                        className="grid grid-cols-[24px_minmax(0,1fr)] gap-2 text-sm"
+                        type="button"
+                        onClick={() => onOpenInFiles({ filePath: item.file })}
+                        className="grid min-w-0 grid-cols-[28px_minmax(0,1fr)] gap-2 rounded-md border border-line bg-white px-2 py-2 text-left shadow-sm transition-colors hover:border-signal hover:bg-signal/5"
+                        title={`${item.file} - ${item.reason}`}
                       >
-                        <span className="grid h-6 w-6 place-items-center rounded bg-white text-xs font-semibold text-signal">
+                        <span className="grid h-7 w-7 place-items-center rounded bg-signal/10 text-xs font-semibold text-signal">
                           {index + 1}
                         </span>
-                        <div className="min-w-0">
-                          <p className="truncate font-medium text-ink">
+                        <span className="min-w-0">
+                          <span className="block truncate text-sm font-semibold text-ink">
                             {item.file}
-                          </p>
-                          <p className="line-clamp-2 text-xs leading-5 text-graphite">
+                          </span>
+                          <span className="mt-0.5 block line-clamp-1 text-xs leading-4 text-graphite">
                             {item.reason}
-                          </p>
-                        </div>
-                      </div>
+                          </span>
+                        </span>
+                      </button>
                     ))}
                   </div>
                 </div>
               </div>
 
-              <div className="mt-4 grid gap-4 lg:grid-cols-2">
-                <div className="rounded-md border border-line bg-white p-4">
-                  <p className="text-sm font-semibold text-ink">Core features</p>
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    {guideCoreFeatures.length ? (
-                      guideCoreFeatures.map((feature) => (
-                        <span
-                          key={feature}
-                          className="rounded bg-signal/10 px-2 py-1 text-xs font-semibold text-signal"
-                        >
-                          {feature}
+              {guideReadingOrder.length ? (
+                <div className="mt-4 rounded-md border border-line bg-white p-4 shadow-sm">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-2">
+                      <DevLensIcon
+                        icon={devlensIcons.guide.readingPath}
+                        tone="primary"
+                        size={15}
+                      />
+                      <p className="text-sm font-semibold text-ink">
+                        Recommended reading path
+                      </p>
+                    </div>
+                    <span className="text-xs font-medium text-graphite">
+                      {Math.min(guideReadingOrder.length, 6)} files
+                    </span>
+                  </div>
+                  <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+                    {guideReadingOrder.slice(0, 6).map((item, index) => (
+                      <button
+                        key={item.file}
+                        type="button"
+                        onClick={() => onOpenInFiles({ filePath: item.file })}
+                        className="group relative min-w-0 rounded-md border border-line bg-white px-3 py-3 text-left shadow-sm transition-colors hover:border-signal hover:bg-signal/5"
+                        title={`${item.file} - ${item.reason}`}
+                      >
+                        <span className="mb-2 grid h-6 w-6 place-items-center rounded bg-signal/10 text-xs font-semibold text-signal">
+                          {index + 1}
                         </span>
+                        <span className="block truncate text-sm font-semibold text-ink">
+                          {item.file}
+                        </span>
+                        <span className="mt-1 block line-clamp-2 text-xs leading-4 text-graphite">
+                          {item.reason}
+                        </span>
+                        {index < Math.min(guideReadingOrder.length, 6) - 1 ? (
+                          <ChevronRight
+                            size={14}
+                            className="absolute right-2 top-3 hidden text-line xl:block"
+                          />
+                        ) : null}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              {architectureFlow.length ? (
+                <div className="mt-4 rounded-md border border-line bg-white p-4 shadow-sm">
+                  <div className="flex items-center gap-2">
+                    <DevLensIcon
+                      icon={devlensIcons.guide.architecture}
+                      tone="primary"
+                      size={15}
+                    />
+                    <p className="text-sm font-semibold text-ink">
+                      Architecture at a glance
+                    </p>
+                  </div>
+                  <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+                    {architectureFlow.map((step, index) => {
+                      const Icon = step.icon;
+                      return (
+                        <div
+                          key={`${step.label}-${index}`}
+                          className="relative rounded-md border border-line bg-cloud/35 px-3 py-3"
+                        >
+                          <div className="flex items-center gap-2">
+                            <DevLensIcon
+                              icon={Icon}
+                              tone="code"
+                              size={15}
+                              framed
+                              label={`${step.label} architecture role`}
+                            />
+                            <div className="min-w-0">
+                              <p className="text-sm font-semibold text-ink">
+                                {step.label}
+                              </p>
+                              <p className="text-[11px] leading-4 text-graphite">
+                                {step.detail}
+                              </p>
+                            </div>
+                          </div>
+                          {index < architectureFlow.length - 1 ? (
+                            <ChevronRight
+                              size={14}
+                              className="absolute -right-2 top-1/2 hidden -translate-y-1/2 rounded-full bg-white text-line xl:block"
+                            />
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : null}
+
+              <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
+                <div className="rounded-md border border-line bg-white p-4 shadow-sm">
+                  <div className="flex items-center gap-2">
+                    <DevLensIcon
+                      icon={devlensIcons.guide.features}
+                      tone="success"
+                      size={15}
+                    />
+                    <p className="text-sm font-semibold text-ink">Core features</p>
+                  </div>
+                  <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                    {guideCoreFeatures.length ? (
+                      guideCoreFeatures.slice(0, 8).map((feature) => (
+                        <div
+                          key={feature}
+                          className="flex min-w-0 items-center gap-2 rounded-md border border-line bg-cloud/40 px-3 py-2"
+                          title={feature}
+                        >
+                          <DevLensIcon
+                            icon={devlensIcons.status.success}
+                            tone="success"
+                            size={14}
+                          />
+                          <span className="min-w-0 line-clamp-2 text-xs font-semibold leading-4 text-ink">
+                            {feature}
+                          </span>
+                        </div>
                       ))
                     ) : (
                       <p className="text-sm leading-6 text-graphite">
@@ -4091,18 +4282,25 @@ function RepoBriefPanel({
                   </div>
                 </div>
 
-                <div className="rounded-md border border-line bg-white p-4">
-                  <p className="text-sm font-semibold text-ink">Main modules</p>
+                <div className="rounded-md border border-line bg-white p-4 shadow-sm">
+                  <div className="flex items-center gap-2">
+                    <DevLensIcon
+                      icon={devlensIcons.guide.modules}
+                      tone="primary"
+                      size={15}
+                    />
+                    <p className="text-sm font-semibold text-ink">Main modules</p>
+                  </div>
                   <div className="mt-3 grid gap-2">
                     {summary.understanding.mainModules.slice(0, 6).map((module) => (
                       <div
                         key={module.name}
-                        className="grid grid-cols-[120px_minmax(0,1fr)] gap-3 text-sm"
+                        className="grid grid-cols-[112px_minmax(0,1fr)] gap-3 rounded-md bg-cloud/35 px-3 py-2 text-sm"
                       >
                         <p className="truncate font-semibold text-ink">
                           {module.name}
                         </p>
-                        <p className="text-graphite">{module.purpose}</p>
+                        <p className="line-clamp-2 text-graphite">{module.purpose}</p>
                       </div>
                     ))}
                   </div>
@@ -5731,13 +5929,71 @@ export default function Home() {
   const largeRepoModeLikely =
     job?.status === "COMPLETED" &&
     (repository?.fileCount ?? tree?.fileCount ?? 0) >= LARGE_REPO_FILE_CAP;
+  const workspaceStats = [
+    {
+      label: "Repository",
+      shortLabel: "Repo",
+      value: repository ? repository.name : "Not analyzed",
+      title: repository ? `${repository.owner}/${repository.name}` : "Not analyzed",
+      icon: devlensIcons.metrics.repository,
+      tone: "primary" as const,
+    },
+    {
+      label: "Languages",
+      shortLabel: "Stack",
+      value: repository?.detectedLanguages.length
+        ? repository.detectedLanguages.slice(0, 2).join(", ")
+        : "Pending",
+      title: repository?.detectedLanguages.length
+        ? repository.detectedLanguages.join(", ")
+        : "Pending",
+      icon: devlensIcons.metrics.languages,
+      tone: "code" as const,
+    },
+    {
+      label: "Frameworks",
+      shortLabel: "Framework",
+      value: repository?.detectedFrameworks.length
+        ? repository.detectedFrameworks.slice(0, 2).join(", ")
+        : "Pending",
+      title: repository?.detectedFrameworks.length
+        ? repository.detectedFrameworks.join(", ")
+        : "Pending",
+      icon: devlensIcons.metrics.frameworks,
+      tone: "code" as const,
+    },
+    {
+      label: "Files",
+      shortLabel: "Files",
+      value: repository ? `${repository.fileCount} files` : "Pending",
+      title: repository ? `${repository.fileCount} files` : "Pending",
+      icon: devlensIcons.metrics.files,
+      tone: "code" as const,
+    },
+    {
+      label: "Complexity",
+      shortLabel: "Complexity",
+      value: docsSummary ? inferComplexity(docsSummary) : "Pending",
+      title: docsSummary ? inferComplexity(docsSummary) : "Pending",
+      icon: devlensIcons.metrics.complexity,
+      tone: "warning" as const,
+    },
+    {
+      label: "Onboarding",
+      shortLabel: "Onboard",
+      value: docsSummary ? estimateOnboarding(docsSummary) : "Pending",
+      title: docsSummary ? estimateOnboarding(docsSummary) : "Pending",
+      icon: devlensIcons.metrics.onboarding,
+      tone: "primary" as const,
+    },
+  ];
 
   return (
     <main className="min-h-[100dvh] bg-cloud text-ink md:fixed md:inset-0 md:flex md:h-[100dvh] md:min-h-0 md:w-screen md:flex-col md:overflow-hidden">
-      <header className="sticky top-0 z-30 flex h-16 shrink-0 items-center justify-between border-b border-line bg-white px-6 md:static">
+      <header className="sticky top-0 z-30 flex h-16 shrink-0 items-center justify-between border-b border-line bg-white/95 px-6 shadow-sm backdrop-blur md:static">
         <div className="flex items-center gap-3">
-          <div className="grid h-9 w-9 place-items-center rounded-md bg-ink text-white">
-            <Sparkles size={18} />
+          <div className="grid h-9 w-9 place-items-center rounded-md bg-gradient-to-br from-signal to-[#4c1d95] text-white shadow-[0_12px_30px_rgba(124,58,237,0.28)]">
+            <DevLensIcon icon={devlensIcons.product.assistant} size={18} />
           </div>
           <div>
             <p className="text-sm font-semibold leading-4">DevLens AI</p>
@@ -5746,14 +6002,14 @@ export default function Home() {
             </p>
           </div>
         </div>
-        <div className="rounded-md border border-line bg-cloud px-3 py-1.5 text-xs font-medium text-graphite">
+        <div className="rounded-md border border-line bg-white px-3 py-1.5 text-xs font-medium text-graphite shadow-sm">
           Repo understanding workspace
         </div>
       </header>
 
       <section className="grid min-w-0 grid-cols-1 overflow-x-hidden md:h-[calc(100dvh-4rem)] md:min-h-0 md:flex-1 md:grid-cols-[280px_minmax(0,1fr)_340px] md:overflow-hidden xl:grid-cols-[300px_minmax(0,1fr)_360px]">
-        <aside className="flex min-h-0 min-w-0 flex-col overflow-hidden border-b border-line bg-white p-4 md:h-full md:border-b-0 md:border-r">
-          <div className="rounded-md border border-line bg-cloud p-3">
+        <aside className="flex min-h-0 min-w-0 flex-col overflow-hidden border-b border-line bg-white/90 p-4 md:h-full md:border-b-0 md:border-r">
+          <div className="rounded-md border border-line bg-white p-3 shadow-sm">
             <div className="flex items-center justify-between gap-3">
               <div className="min-w-0">
                 <p className="text-sm font-semibold text-ink">Repository Status</p>
@@ -5790,7 +6046,9 @@ export default function Home() {
                 </div>
                 <div className="h-1.5 overflow-hidden rounded-full bg-line">
                   <div
-                    className="h-full rounded-full bg-signal transition-all"
+                    className={`h-full rounded-full transition-all ${
+                      job.status === "COMPLETED" ? "bg-mint" : "bg-signal"
+                    }`}
                     style={{ width: `${job.progress}%` }}
                   />
                 </div>
@@ -5833,11 +6091,15 @@ export default function Home() {
                         }`}
                       >
                         {failed ? (
-                          <XCircle size={14} />
+                          <DevLensIcon icon={devlensIcons.status.error} size={14} />
                         ) : complete ? (
-                          <CheckCircle2 size={14} />
+                          <DevLensIcon icon={devlensIcons.status.success} size={14} />
                         ) : active ? (
-                          <Loader2 size={13} className="animate-spin" />
+                          <DevLensIcon
+                            icon={devlensIcons.status.loading}
+                            size={13}
+                            className="animate-spin"
+                          />
                         ) : (
                           index + 1
                         )}
@@ -5872,6 +6134,7 @@ export default function Home() {
                   disabled={!explorerTree.length}
                   className="grid h-7 w-7 place-items-center rounded border border-line bg-white text-graphite transition-colors hover:border-signal hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
                   title="Collapse all"
+                  aria-label="Collapse all folders"
                 >
                   <ChevronRight size={14} />
                 </button>
@@ -5881,6 +6144,7 @@ export default function Home() {
                   disabled={!explorerTree.length}
                   className="grid h-7 w-7 place-items-center rounded border border-line bg-white text-graphite transition-colors hover:border-signal hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
                   title="Expand all"
+                  aria-label="Expand all folders"
                 >
                   <ChevronDown size={14} />
                 </button>
@@ -5890,13 +6154,14 @@ export default function Home() {
                   disabled={!selectedNode}
                   className="grid h-7 w-7 place-items-center rounded border border-line bg-white text-graphite transition-colors hover:border-signal hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
                   title="Reveal selected file"
+                  aria-label="Reveal selected file"
                 >
                   <FolderOpen size={14} />
                 </button>
               </div>
             </div>
 
-            <div className="mb-3 flex h-9 items-center gap-2 rounded-md border border-line bg-cloud px-3 focus-within:border-signal">
+            <div className="mb-3 flex h-9 items-center gap-2 rounded-md border border-line bg-white px-3 shadow-sm focus-within:border-signal focus-within:ring-2 focus-within:ring-signal/10">
               <Search size={14} className="shrink-0 text-graphite" />
               <input
                 value={fileQuery}
@@ -5907,7 +6172,7 @@ export default function Home() {
               />
             </div>
 
-            <div className="min-h-0 flex-1 overflow-auto rounded-md border border-line bg-white p-2">
+            <div className="min-h-0 flex-1 overflow-auto rounded-md border border-line bg-white p-2 shadow-sm">
               {visibleTree.length ? (
                 <ExplorerTree
                   nodes={visibleTree}
@@ -5934,47 +6199,45 @@ export default function Home() {
           </div>
         </aside>
 
-        <section className="min-h-0 min-w-0 overflow-y-auto p-4 md:p-6">
-          <div className="mb-6">
-            <h1 className="text-2xl font-semibold tracking-normal">
-              Repository Workspace
-            </h1>
-            <p className="mt-1 max-w-2xl text-sm leading-6 text-graphite">
-              Paste a GitHub repository URL. DevLens will prepare the guide,
-              file tree, search, walkthrough, and file-backed assistant context.
-            </p>
-          </div>
-
-          <div className="mb-6 rounded-md border border-line bg-white p-4">
-            <div className="grid gap-3 md:grid-cols-[1fr_auto]">
+        <section className="min-h-0 min-w-0 overflow-y-auto bg-gradient-to-b from-cloud to-white/40 p-4 md:p-6">
+          <div className="mb-5 rounded-md border border-line bg-white p-3 shadow-sm">
+            <div className="grid gap-2 md:grid-cols-[1fr_auto]">
               <input
                 value={repoUrl}
                 onChange={(event) => setRepoUrl(event.target.value)}
-                className="h-11 min-w-0 flex-1 rounded-md border border-line px-3 text-sm outline-none focus:border-signal"
+                className="h-10 min-w-0 flex-1 rounded-md border border-line bg-white px-3 text-sm outline-none transition-colors focus:border-signal focus:ring-2 focus:ring-signal/10"
                 placeholder="https://github.com/owner/repository"
               />
               <button
                 onClick={analyzeRepository}
                 disabled={isRunning}
-                className="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-signal px-4 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
+                className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-gradient-to-r from-signal to-[#5b21b6] px-4 text-sm font-semibold text-white shadow-[0_10px_20px_rgba(124,58,237,0.18)] transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
               >
                 {isRunning ? (
-                  <Loader2 size={17} className="animate-spin" />
-                ) : (
-                  <GitPullRequest size={17} />
+                <DevLensIcon
+                  icon={devlensIcons.status.loading}
+                  size={17}
+                  className="animate-spin"
+                />
+              ) : (
+                  <DevLensIcon icon={devlensIcons.product.repository} size={17} />
                 )}
                 Analyze repo
               </button>
             </div>
             {error ? (
               <div className="mt-3 flex items-start gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm leading-6 text-red-700">
-                <AlertCircle size={16} className="mt-0.5 shrink-0" />
+                <DevLensIcon
+                  icon={devlensIcons.status.notice}
+                  size={16}
+                  className="mt-0.5"
+                />
                 {error}
               </div>
             ) : null}
             {job ? (
-              <div className="mt-3 rounded-md border border-line bg-cloud p-3 text-sm">
-                <div className="mb-2 flex items-center justify-between">
+              <div className="mt-2 rounded-md border border-line bg-cloud/50 px-3 py-2 text-sm">
+                <div className="mb-1.5 flex items-center justify-between">
                   <span className={statusTone(job.status)}>{formatJobStatus(job.status)}</span>
                   <span className="text-graphite">
                     {formatStepLabel(job.currentStep)}
@@ -5983,11 +6246,13 @@ export default function Home() {
                 </div>
                 <div className="h-2 overflow-hidden rounded-full bg-line">
                   <div
-                    className="h-full rounded-full bg-signal transition-all"
+                    className={`h-full rounded-full transition-all ${
+                      job.status === "COMPLETED" ? "bg-mint" : "bg-signal"
+                    }`}
                     style={{ width: `${job.progress}%` }}
                   />
                 </div>
-                <div className="mt-2 flex items-center gap-2 text-xs text-graphite">
+                <div className="mt-1.5 flex items-center gap-2 text-xs text-graphite">
                   <Clock3 size={13} />
                   Elapsed: {calculateDuration(job)}
                   {job.errorMessage ? (
@@ -5996,7 +6261,7 @@ export default function Home() {
                     </span>
                   ) : null}
                 </div>
-                <p className="mt-2 text-xs leading-5 text-graphite">
+                <p className="mt-1.5 text-xs leading-5 text-graphite">
                   {getAnalysisStatusMessage(job, repositoryReady)}
                 </p>
                 {largeRepoModeLikely ? (
@@ -6006,75 +6271,63 @@ export default function Home() {
                 ) : null}
               </div>
             ) : (
-              <p className="mt-3 text-xs leading-5 text-graphite">
+              <p className="mt-2 text-xs leading-5 text-graphite">
                 First run: use a public GitHub URL. After analysis, open Guide for the overview, Files for source, and Search for focused code lookup.
               </p>
             )}
           </div>
 
-          <div className="mb-6 rounded-md border border-line bg-white px-4 py-3 shadow-sm">
-            <div className="grid grid-cols-2 gap-3 md:grid-cols-3 2xl:grid-cols-6">
-            {[
-              [
-                "Repository",
-                repository
-                  ? `${repository.owner}/${repository.name}`
-                  : "Not analyzed",
-              ],
-              [
-                "Languages",
-                repository?.detectedLanguages.length
-                  ? repository.detectedLanguages.join(", ")
-                  : "Pending",
-              ],
-              [
-                "Frameworks",
-                repository?.detectedFrameworks.length
-                  ? repository.detectedFrameworks.join(", ")
-                  : "Pending",
-              ],
-              [
-                "Files",
-                repository ? `${repository.fileCount} files` : "Pending",
-              ],
-              [
-                "Complexity",
-                docsSummary ? inferComplexity(docsSummary) : "Pending",
-              ],
-              [
-                "Onboarding",
-                docsSummary ? estimateOnboarding(docsSummary) : "Pending",
-              ],
-            ].map(([label, value]) => (
-              <div
-                key={label}
-                className="min-w-0 border-r border-line pr-3 last:border-r-0"
-              >
-                <p className="text-[11px] font-medium uppercase tracking-wide text-graphite">
-                  {label}
-                </p>
-                <p
-                  className="mt-1 truncate text-sm font-semibold text-ink"
-                  title={value}
-                >
-                  {value}
-                </p>
-              </div>
-            ))}
+          <div className="mb-6 min-w-0 overflow-hidden rounded-md border border-line bg-white/95 p-3 shadow-sm">
+            <div className="grid min-w-0 grid-cols-[repeat(auto-fit,minmax(158px,1fr))] gap-3">
+              {workspaceStats.map((stat) => {
+                const Icon = stat.icon;
+                return (
+                  <div
+                    key={stat.label}
+                    className="min-w-0 max-w-full overflow-hidden rounded-md border border-line bg-white px-3 py-3 shadow-sm"
+                    title={`${stat.label}: ${stat.title}`}
+                  >
+                    <div className="flex min-w-0 max-w-full items-center gap-2 overflow-hidden">
+                      <DevLensIcon
+                        icon={Icon}
+                        tone={stat.tone}
+                        size={15}
+                        framed
+                        label={`${stat.label} metric`}
+                      />
+                      <div className="min-w-0 max-w-full overflow-hidden">
+                        <p
+                          className="block max-w-full truncate whitespace-nowrap text-[10px] font-semibold uppercase leading-4 tracking-wide text-graphite"
+                          title={stat.label}
+                        >
+                          {stat.shortLabel}
+                        </p>
+                        <p
+                          className="mt-0.5 block max-w-full truncate whitespace-nowrap text-sm font-semibold leading-5 text-ink"
+                          title={stat.title}
+                        >
+                          {stat.value}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </div>
 
-          <div className="mb-4 flex items-center gap-1 rounded-md border border-line bg-white p-1">
+          <div className="mb-4 flex items-center gap-1 rounded-md border border-line bg-white p-1 shadow-sm">
             {workspaceTabs.map((tab) => (
               <button
                 key={tab.key}
                 onClick={() => setActiveWorkspaceTab(tab.key)}
-                className={`h-9 flex-1 rounded px-3 text-sm font-medium transition-colors ${
+                className={`inline-flex h-9 flex-1 items-center justify-center gap-2 rounded px-3 text-sm font-medium transition-colors ${
                   activeWorkspaceTab === tab.key
-                    ? "bg-ink text-white"
+                    ? "bg-signal text-white shadow-[0_10px_22px_rgba(124,58,237,0.20)]"
                     : "text-graphite hover:bg-cloud"
                 }`}
               >
+                <DevLensIcon icon={tab.icon} size={14} />
                 {tab.label}
               </button>
             ))}
@@ -6602,15 +6855,24 @@ export default function Home() {
           ) : null}
         </section>
 
-        <aside className="flex min-h-[520px] min-w-0 flex-col overflow-hidden border-t border-line bg-white p-4 md:h-full md:min-h-0 md:border-l md:border-t-0">
+        <aside className="flex min-h-[520px] min-w-0 flex-col overflow-hidden border-t border-line bg-white/90 p-4 md:h-full md:min-h-0 md:border-l md:border-t-0">
           <div className="flex min-w-0 items-center justify-between gap-3">
             <div className="min-w-0">
-              <p className="font-semibold">DevLens AI</p>
+              <div className="flex items-center gap-2">
+                <p className="font-semibold">DevLens AI</p>
+                <span className="rounded bg-signal/10 px-1.5 py-0.5 text-[10px] font-semibold text-signal">
+                  BETA
+                </span>
+              </div>
               <p className="mt-1 text-sm leading-6 text-graphite">
                 Ask practical questions about this repository.
               </p>
             </div>
-            <Sparkles size={18} className="shrink-0 text-signal" />
+            <DevLensIcon
+              icon={devlensIcons.product.assistant}
+              tone="primary"
+              size={18}
+            />
           </div>
 
           <div className="mt-4">
@@ -6630,7 +6892,7 @@ export default function Home() {
                 type="button"
                 onClick={() => handleSuggestedQuestion(prompt)}
                 disabled={isAskingDevlens}
-                className="max-w-full rounded-full border border-line bg-white px-3 py-1.5 text-left text-xs font-medium text-graphite transition-colors hover:border-signal hover:bg-cloud hover:text-ink"
+                className="max-w-full rounded-full border border-line bg-white px-3 py-1.5 text-left text-xs font-medium text-graphite shadow-sm transition-colors hover:border-signal hover:bg-signal/5 hover:text-ink"
               >
                 {prompt}
               </button>
@@ -6696,7 +6958,7 @@ export default function Home() {
 
           <div className="mt-4 min-h-0 min-w-0 flex-1 overflow-y-auto pr-1">
           {repositoryReady && guidedInvestigation ? (
-            <section className="min-w-0 overflow-hidden rounded-md border border-line bg-cloud p-3">
+            <section className="min-w-0 overflow-hidden rounded-md bg-cloud/35 p-3">
               <div className="flex min-w-0 items-start justify-between gap-3">
                 <div className="min-w-0">
                   <p className="text-xs font-semibold uppercase tracking-wide text-graphite">
@@ -6710,14 +6972,14 @@ export default function Home() {
                   type="button"
                   onClick={startWalkthrough}
                   disabled={isAskingDevlens}
-                  className="shrink-0 rounded-md border border-line bg-white px-2 py-1 text-xs font-medium text-graphite hover:border-signal hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+                  className="shrink-0 rounded-md border border-line bg-white px-2 py-1 text-xs font-medium text-graphite shadow-sm hover:border-signal hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   Start walkthrough
                 </button>
               </div>
 
               {walkthrough ? (
-                <div className="mt-3 min-w-0 overflow-hidden rounded-md border border-line bg-white p-3">
+                <div className="mt-3 min-w-0 overflow-hidden rounded-md bg-white p-3 shadow-sm">
                   <div className="flex min-w-0 items-start justify-between gap-3">
                     <div className="min-w-0">
                       <p className="text-xs font-semibold uppercase tracking-wide text-graphite">
@@ -6779,7 +7041,7 @@ export default function Home() {
                       type="button"
                       onClick={walkthrough.completedCount || walkthrough.skippedCount ? continueWalkthrough : startWalkthrough}
                       disabled={isAskingDevlens || walkthrough.isComplete}
-                      className="rounded-md bg-ink px-2 py-1 text-xs font-semibold text-white hover:bg-graphite disabled:cursor-not-allowed disabled:opacity-50"
+                      className="rounded-md bg-signal px-2 py-1 text-xs font-semibold text-white hover:bg-[#5b21b6] disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       {walkthrough.completedCount || walkthrough.skippedCount
                         ? "Continue"
@@ -6854,7 +7116,11 @@ export default function Home() {
                       >
                         {recapCopyState === "copied" ? "Copied" : "Copy recap"}
                       </button>
-                      <CheckCircle2 size={16} className="text-mint" />
+                      <DevLensIcon
+                        icon={devlensIcons.status.success}
+                        tone="success"
+                        size={16}
+                      />
                     </div>
                   </div>
 
@@ -6935,7 +7201,7 @@ export default function Home() {
               ) : null}
 
               {guidedInvestigation.bestNextFile ? (
-                <div className="mt-3 min-w-0 overflow-hidden rounded-md border border-line bg-white p-3">
+                <div className="mt-3 min-w-0 overflow-hidden rounded-md bg-white p-3 shadow-sm">
                   <p className="text-xs font-semibold uppercase tracking-wide text-graphite">
                     Best next file
                   </p>
@@ -6953,9 +7219,9 @@ export default function Home() {
                   <button
                     type="button"
                     onClick={() => openCitationInFiles(guidedInvestigation.bestNextFile!)}
-                    className="mt-3 inline-flex items-center gap-1.5 rounded-md bg-ink px-2 py-1 text-xs font-semibold text-white hover:bg-graphite"
+                    className="mt-3 inline-flex items-center gap-1.5 rounded-md bg-signal px-2 py-1 text-xs font-semibold text-white hover:bg-[#5b21b6]"
                   >
-                    <FileCode2 size={12} />
+                    <DevLensIcon icon={devlensIcons.product.citations} size={12} />
                     Open evidence
                   </button>
                 </div>
@@ -6969,7 +7235,12 @@ export default function Home() {
                   <ul className="mt-2 grid gap-1.5 text-xs leading-5 text-graphite">
                     {guidedInvestigation.findings.map((finding) => (
                       <li key={finding} className="flex min-w-0 gap-2">
-                        <CheckCircle2 size={13} className="mt-0.5 shrink-0 text-mint" />
+                        <DevLensIcon
+                          icon={devlensIcons.status.success}
+                          tone="success"
+                          size={13}
+                          className="mt-0.5"
+                        />
                         <span className="min-w-0 line-clamp-2 break-words">{finding}</span>
                       </li>
                     ))}
@@ -7034,7 +7305,12 @@ export default function Home() {
                     <ul className="mt-2 grid gap-1.5 text-xs leading-5 text-graphite">
                       {guidedInvestigation.risks.map((risk) => (
                         <li key={risk} className="flex min-w-0 gap-2">
-                          <AlertCircle size={13} className="mt-0.5 shrink-0 text-amber" />
+                          <DevLensIcon
+                            icon={devlensIcons.status.warning}
+                            tone="warning"
+                            size={13}
+                            className="mt-0.5"
+                          />
                           <span className="min-w-0 line-clamp-2 break-words">{risk}</span>
                         </li>
                       ))}
@@ -7082,19 +7358,28 @@ export default function Home() {
             </section>
           ) : null}
 
-          <div className="mt-4 min-w-0 rounded-md bg-cloud/70 p-3">
-            <div className="ml-auto max-w-[88%] break-words rounded-md bg-ink px-3 py-2 text-sm leading-6 text-white">
+          <div className="mt-4 min-w-0 rounded-md bg-cloud/35 p-3">
+            <div className="ml-auto max-w-[88%] break-words rounded-md bg-gradient-to-r from-[#1f1635] to-[#312052] px-3 py-2 text-sm leading-6 text-white">
               {devlensPrompt}
             </div>
             <div className="mt-3 flex min-w-0 items-start gap-3">
-              <div className="grid h-7 w-7 shrink-0 place-items-center rounded-md bg-white text-signal shadow-sm">
-                <Sparkles size={14} />
-              </div>
+              <DevLensIcon
+                icon={devlensIcons.product.assistant}
+                tone="primary"
+                size={14}
+                framed
+                label="DevLens assistant"
+              />
               <div className="min-w-0 max-w-full overflow-hidden rounded-md bg-white p-3 shadow-sm">
                 <p className="break-words text-sm leading-6 text-graphite">
                   {isAskingDevlens ? (
                     <span className="inline-flex items-center gap-2">
-                      <Loader2 size={14} className="animate-spin text-signal" />
+                      <DevLensIcon
+                        icon={devlensIcons.status.loading}
+                        tone="primary"
+                        size={14}
+                        className="animate-spin"
+                      />
                       Gathering file-backed context
                     </span>
                   ) : (
@@ -7123,7 +7408,12 @@ export default function Home() {
                           className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-2 rounded bg-cloud px-2 py-1.5 text-left text-xs font-medium text-graphite transition-colors hover:bg-signal/10 hover:text-ink"
                           title={`${source.path} - ${source.reason}`}
                         >
-                          <FileCode2 size={12} className="mt-0.5 shrink-0 text-signal" />
+                          <DevLensIcon
+                            icon={devlensIcons.product.citations}
+                            tone="primary"
+                            size={12}
+                            className="mt-0.5"
+                          />
                           <span className="min-w-0">
                             <span className="block truncate">{source.label}</span>
                             <span className="mt-0.5 block line-clamp-2 font-normal leading-4 text-graphite">
@@ -7161,8 +7451,8 @@ export default function Home() {
           </div>
           </div>
 
-          <div className="mt-auto min-w-0 shrink-0 bg-white pt-4">
-            <div className="min-w-0 rounded-md border border-line bg-cloud px-3 py-2">
+          <div className="mt-auto min-w-0 shrink-0 bg-white/90 pt-4">
+            <div className="min-w-0 rounded-md border border-line bg-white px-3 py-2 shadow-sm">
               <textarea
                 value={devlensPrompt}
                 onChange={(event) => setDevlensPrompt(event.target.value)}
@@ -7182,9 +7472,23 @@ export default function Home() {
                   type="button"
                   onClick={() => void askDevlens(devlensPrompt)}
                   disabled={!devlensPrompt.trim() || isAskingDevlens}
-                  className="rounded-md bg-ink px-3 py-1.5 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+                  className="inline-flex items-center gap-1.5 rounded-md bg-signal px-3 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-[#5b21b6] disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  {isAskingDevlens ? "Reading" : "Ask"}
+                  {isAskingDevlens ? (
+                    <>
+                      <DevLensIcon
+                        icon={devlensIcons.status.loading}
+                        size={12}
+                        className="animate-spin"
+                      />
+                      Reading
+                    </>
+                  ) : (
+                    <>
+                      <DevLensIcon icon={devlensIcons.product.send} size={12} />
+                      Ask
+                    </>
+                  )}
                 </button>
               </div>
             </div>

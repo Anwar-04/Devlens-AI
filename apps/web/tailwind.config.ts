@@ -5,11 +5,11 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        ink: "#17202a",
-        graphite: "#2f3a45",
-        cloud: "#f6f7f9",
-        line: "#dde3ea",
-        signal: "#2563eb",
+        ink: "#171229",
+        graphite: "#5f5872",
+        cloud: "#faf8ff",
+        line: "#e8e1f2",
+        signal: "#7c3aed",
         mint: "#0f9f7a",
         amber: "#c47f16"
       }
@@ -19,4 +19,3 @@ const config: Config = {
 };
 
 export default config;
-
