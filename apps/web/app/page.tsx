@@ -4110,20 +4110,23 @@ function RepoBriefPanel({
               </div>
             </section>
 
-            <section>
-              <div className="mb-3 flex items-center justify-between gap-3">
+            <details className="group rounded-md border border-line bg-white p-4">
+              <summary className="flex cursor-pointer list-none items-center justify-between gap-3">
                 <div>
-                  <p className="text-xs font-semibold uppercase tracking-wide text-graphite">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-graphite">
                     Technical Overview
-                  </p>
+                  </span>
                   <h3 className="mt-1 text-lg font-semibold text-ink">
                     How is it built?
                   </h3>
                 </div>
-                <Workflow size={18} className="shrink-0 text-signal" />
-              </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  <Workflow size={18} className="text-signal" />
+                  <ChevronDown size={16} className="text-graphite transition-transform group-open:rotate-180" />
+                </div>
+              </summary>
 
-              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+              <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
                 {buildTechnicalOverviewItems(summary).map((item) => {
                   const Icon = item.icon;
                   return (
@@ -4150,23 +4153,26 @@ function RepoBriefPanel({
                   );
                 })}
               </div>
-            </section>
+            </details>
 
-            <section>
-              <div className="mb-3 flex items-center justify-between gap-3">
+            <details className="group rounded-md border border-line bg-white p-4">
+              <summary className="flex cursor-pointer list-none items-center justify-between gap-3">
                 <div>
-                  <p className="text-xs font-semibold uppercase tracking-wide text-graphite">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-graphite">
                     Core Components
-                  </p>
+                  </span>
                   <h3 className="mt-1 text-lg font-semibold text-ink">
                     Which architectural modules matter?
                   </h3>
                 </div>
-                <Braces size={18} className="shrink-0 text-signal" />
-              </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  <Braces size={18} className="text-signal" />
+                  <ChevronDown size={16} className="text-graphite transition-transform group-open:rotate-180" />
+                </div>
+              </summary>
 
               {buildCoreComponents(summary).length ? (
-                <div className="grid gap-3 lg:grid-cols-2">
+                <div className="mt-4 grid gap-3 lg:grid-cols-2">
                   {buildCoreComponents(summary).map((component) => (
                     <div
                       key={component.name}
@@ -4223,11 +4229,11 @@ function RepoBriefPanel({
                   ))}
                 </div>
               ) : (
-                <div className="rounded-md border border-line bg-cloud p-4 text-sm leading-6 text-graphite">
+                <div className="mt-4 rounded-md border border-line bg-cloud p-4 text-sm leading-6 text-graphite">
                   Core components will appear when DevLens detects architectural paths such as controllers, services, routes, database, middleware, utilities, or configuration.
                 </div>
               )}
-            </section>
+            </details>
 
             <details className="group rounded-md border border-line bg-white p-4">
               <summary className="flex cursor-pointer list-none items-center justify-between gap-3">
@@ -5727,8 +5733,8 @@ export default function Home() {
     (repository?.fileCount ?? tree?.fileCount ?? 0) >= LARGE_REPO_FILE_CAP;
 
   return (
-    <main className="min-h-screen bg-cloud text-ink">
-      <header className="sticky top-0 z-30 flex h-16 items-center justify-between border-b border-line bg-white px-6">
+    <main className="min-h-[100dvh] bg-cloud text-ink md:fixed md:inset-0 md:flex md:h-[100dvh] md:min-h-0 md:w-screen md:flex-col md:overflow-hidden">
+      <header className="sticky top-0 z-30 flex h-16 shrink-0 items-center justify-between border-b border-line bg-white px-6 md:static">
         <div className="flex items-center gap-3">
           <div className="grid h-9 w-9 place-items-center rounded-md bg-ink text-white">
             <Sparkles size={18} />
@@ -5745,8 +5751,8 @@ export default function Home() {
         </div>
       </header>
 
-      <section className="grid min-h-[calc(100vh-4rem)] min-w-0 grid-cols-1 overflow-x-hidden xl:grid-cols-[300px_minmax(0,1fr)_360px]">
-        <aside className="min-w-0 overflow-hidden flex min-h-0 flex-col border-b border-line bg-white p-4 xl:border-b-0 xl:border-r">
+      <section className="grid min-w-0 grid-cols-1 overflow-x-hidden md:h-[calc(100dvh-4rem)] md:min-h-0 md:flex-1 md:grid-cols-[280px_minmax(0,1fr)_340px] md:overflow-hidden xl:grid-cols-[300px_minmax(0,1fr)_360px]">
+        <aside className="flex min-h-0 min-w-0 flex-col overflow-hidden border-b border-line bg-white p-4 md:h-full md:border-b-0 md:border-r">
           <div className="rounded-md border border-line bg-cloud p-3">
             <div className="flex items-center justify-between gap-3">
               <div className="min-w-0">
@@ -5928,7 +5934,7 @@ export default function Home() {
           </div>
         </aside>
 
-        <section className="min-h-0 min-w-0 overflow-auto p-4 md:p-6">
+        <section className="min-h-0 min-w-0 overflow-y-auto p-4 md:p-6">
           <div className="mb-6">
             <h1 className="text-2xl font-semibold tracking-normal">
               Repository Workspace
@@ -6457,7 +6463,7 @@ export default function Home() {
                 </form>
               </div>
 
-              <div className="h-[640px] overflow-auto p-4">
+              <div className="p-4">
                 {searchError ? (
                   <div className="mb-3 flex items-start gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
                     <AlertCircle size={16} className="mt-0.5 shrink-0" />
@@ -6596,7 +6602,7 @@ export default function Home() {
           ) : null}
         </section>
 
-        <aside className="min-w-0 overflow-hidden flex min-h-[520px] flex-col border-t border-line bg-white p-4 xl:min-h-0 xl:border-l xl:border-t-0">
+        <aside className="flex min-h-[520px] min-w-0 flex-col overflow-hidden border-t border-line bg-white p-4 md:h-full md:min-h-0 md:border-l md:border-t-0">
           <div className="flex min-w-0 items-center justify-between gap-3">
             <div className="min-w-0">
               <p className="font-semibold">DevLens AI</p>
@@ -6615,20 +6621,9 @@ export default function Home() {
 
           <div className="mt-2 flex min-w-0 flex-wrap gap-2">
             {[
-              "Start walkthrough",
-              "Continue walkthrough",
               "Explain this repository",
+              "Where should I start?",
               "Explain selected file",
-              "Why am I reading this file?",
-              "What should I look for here?",
-              "Show evidence for this step",
-              "Summarize walkthrough progress",
-              "Copy recap",
-              "Summarize this for a teammate",
-              "What should I inspect next?",
-              "What are the most important files?",
-              "Find authentication",
-              "Find business logic",
             ].map((prompt) => (
               <button
                 key={prompt}
@@ -6642,8 +6637,66 @@ export default function Home() {
             ))}
           </div>
 
+          <details className="group mt-2 min-w-0 rounded-md border border-line bg-white px-3 py-2">
+            <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-xs font-semibold uppercase tracking-wide text-graphite">
+              <span>More</span>
+              <ChevronDown size={14} className="transition-transform group-open:rotate-180" />
+            </summary>
+            <div className="mt-3 grid gap-3">
+              {[
+                {
+                  label: "Walkthrough",
+                  prompts: [
+                    "Start walkthrough",
+                    "Continue walkthrough",
+                    "Show evidence for this step",
+                    "Summarize walkthrough progress",
+                    "Copy recap",
+                  ],
+                },
+                {
+                  label: "Understand",
+                  prompts: [
+                    "Why am I reading this file?",
+                    "What should I look for here?",
+                    "Summarize this for a teammate",
+                    "What should I inspect next?",
+                  ],
+                },
+                {
+                  label: "Locate",
+                  prompts: [
+                    "What are the most important files?",
+                    "Find authentication",
+                    "Find business logic",
+                  ],
+                },
+              ].map((group) => (
+                <div key={group.label} className="min-w-0">
+                  <p className="text-[11px] font-semibold uppercase tracking-wide text-graphite">
+                    {group.label}
+                  </p>
+                  <div className="mt-1.5 flex min-w-0 flex-wrap gap-1.5">
+                    {group.prompts.map((prompt) => (
+                      <button
+                        key={prompt}
+                        type="button"
+                        onClick={() => handleSuggestedQuestion(prompt)}
+                        disabled={isAskingDevlens}
+                        className="max-w-full rounded-full border border-line bg-white px-2 py-1 text-left text-xs font-medium text-graphite transition-colors hover:border-signal hover:bg-cloud hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {prompt}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </details>
+
+          <div className="mt-4 min-h-0 min-w-0 flex-1 overflow-y-auto pr-1">
           {repositoryReady && guidedInvestigation ? (
-            <section className="mt-4 min-w-0 overflow-hidden rounded-md border border-line bg-cloud p-3">
+            <section className="min-w-0 overflow-hidden rounded-md border border-line bg-cloud p-3">
               <div className="flex min-w-0 items-start justify-between gap-3">
                 <div className="min-w-0">
                   <p className="text-xs font-semibold uppercase tracking-wide text-graphite">
@@ -7029,7 +7082,7 @@ export default function Home() {
             </section>
           ) : null}
 
-          <div className="mt-4 min-h-0 min-w-0 flex-1 overflow-hidden overflow-y-auto rounded-md bg-cloud/70 p-3">
+          <div className="mt-4 min-w-0 rounded-md bg-cloud/70 p-3">
             <div className="ml-auto max-w-[88%] break-words rounded-md bg-ink px-3 py-2 text-sm leading-6 text-white">
               {devlensPrompt}
             </div>
@@ -7106,8 +7159,9 @@ export default function Home() {
               </div>
             </div>
           </div>
+          </div>
 
-          <div className="sticky bottom-0 mt-auto min-w-0 bg-white pt-4">
+          <div className="mt-auto min-w-0 shrink-0 bg-white pt-4">
             <div className="min-w-0 rounded-md border border-line bg-cloud px-3 py-2">
               <textarea
                 value={devlensPrompt}
