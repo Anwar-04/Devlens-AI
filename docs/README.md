@@ -5,6 +5,7 @@ This folder is the current DevLens AI documentation and interview study pack. It
 ## Start Here
 
 - [Architecture](ARCHITECTURE.md)
+- [Architecture Cheat Sheet](ARCHITECTURE_CHEAT_SHEET.md)
 - [Codebase Study Guide](CODEBASE_STUDY_GUIDE.md)
 - [API Reference](API_REFERENCE.md)
 - [Data Model](DATA_MODEL.md)
