@@ -1,0 +1,52 @@
+services:
+  - type: web
+    name: devlens-api
+    runtime: node
+    plan: free
+    buildCommand: npm install && npm run db:generate -w @devlens/database && npm run build -w @devlens/shared && npm run build -w @devlens/database && npm run build -w @devlens/api
+    startCommand: npm run start -w @devlens/api
+    healthCheckPath: /health/ready
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: API_PORT
+        value: 4000
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: WEB_ORIGIN
+        sync: false
+      - key: AI_PROVIDER
+        value: gemini
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL_CHAIN
+        value: gemini-3.1-flash-lite,gemini-3-flash,gemini-3.5-flash
+      - key: GEMINI_MAX_ATTEMPTS
+        value: 3
+
+  - type: worker
+    name: devlens-repository-worker
+    runtime: node
+    buildCommand: npm install && npm run db:generate -w @devlens/database && npm run build -w @devlens/shared && npm run build -w @devlens/database && npm run build -w @devlens/repository-worker
+    startCommand: npm run start -w @devlens/repository-worker
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: REPOSITORY_V1_MAX_ANALYZED_FILES
+        value: 1200
+      - key: REPOSITORY_V1_MAX_SYMBOLS
+        value: 3000
+      - key: REPOSITORY_V1_MAX_SOURCE_RECORDS
+        value: 2500
+      - key: REPOSITORY_DB_WRITE_BATCH_SIZE
+        value: 500
+      - key: REPOSITORY_DB_TRANSACTION_TIMEOUT_MS
+        value: 60000
