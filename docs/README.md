@@ -31,9 +31,13 @@ The app is intentionally citation-first. Provider-backed answers are optional an
 
 ## Local Run
 
-```bash
+```powershell
 npm install
-npm run docker:up
+docker-compose -f infra/docker/docker-compose.yml up -d postgres redis qdrant minio
+.\apps\api\run-live-api.cmd
+.\apps\repository-worker\run-live-worker.cmd
+$env:NEXT_PUBLIC_API_URL="http://localhost:4000"
+npm run start -w @devlens/web
 ```
 
 Expected endpoints:
@@ -47,6 +51,16 @@ Use the demo repository:
 ```text
 https://github.com/Anwar-04/linkforge-url-shortener
 ```
+
+Required local service environment:
+
+```text
+DATABASE_URL=postgresql://devlens:devlens@localhost:55452/devlens
+REDIS_URL=redis://localhost:6379
+QDRANT_URL=http://localhost:6333
+```
+
+If repository analysis stays on "Preparing 0%", the repository worker is usually not running or cannot reach the database. Start Docker services, start the API, then start `apps/repository-worker/run-live-worker.cmd`. The worker now exits before taking jobs if `DATABASE_URL` is missing.
 
 ## Active Versus Archived Docs
 

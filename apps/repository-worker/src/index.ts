@@ -4,6 +4,7 @@ import * as path from "path";
 import * as ts from "typescript";
 import { execFileSync } from "child_process";
 import { fileURLToPath } from "url";
+import { Redis } from "ioredis";
 import { db } from "@devlens/database";
 import {
   CloneJobPayload,
@@ -16,6 +17,7 @@ import {
 const REDIS_URL = process.env.REDIS_URL ?? "redis://localhost:6379";
 const QDRANT_URL = process.env.QDRANT_URL ?? "http://localhost:6333";
 const workerName = "repository-worker";
+const QUEUE_NAME = "repo.clone";
 const MAX_FILES = Number(process.env.REPOSITORY_MAX_FILES ?? 5000);
 const V1_MAX_ANALYZED_FILES = Number(
   process.env.REPOSITORY_V1_MAX_ANALYZED_FILES ?? 1200,
@@ -807,6 +809,55 @@ function buildAuthenticatedGitHubUrl(url: string) {
   }
 }
 
+function getSafeUrlLabel(value: string): string {
+  try {
+    const parsed = new URL(value);
+    return `${parsed.protocol}//${parsed.hostname}${parsed.port ? `:${parsed.port}` : ""}`;
+  } catch {
+    return "invalid-url";
+  }
+}
+
+function validateRequiredEnv() {
+  const databaseConfigured = Boolean(process.env.DATABASE_URL?.trim());
+  console.log(
+    JSON.stringify({
+      service: workerName,
+      status: "preflight",
+      queue: QUEUE_NAME,
+      databaseConfigured,
+      redis: getSafeUrlLabel(REDIS_URL),
+    }),
+  );
+
+  if (!databaseConfigured) {
+    throw new Error(
+      [
+        "DATABASE_URL is not set. Repository analysis worker cannot start.",
+        "Set DATABASE_URL=postgresql://devlens:devlens@localhost:55452/devlens before starting the worker.",
+        "No jobs were dequeued.",
+      ].join(" "),
+    );
+  }
+}
+
+async function verifyWorkerServices() {
+  await db.$queryRaw`SELECT 1`;
+
+  const redis = new Redis(REDIS_URL, {
+    lazyConnect: true,
+    maxRetriesPerRequest: 1,
+  });
+  try {
+    await redis.connect();
+    await redis.ping();
+  } finally {
+    if (redis.status !== "end") {
+      await redis.quit().catch(() => undefined);
+    }
+  }
+}
+
 export function classifyCloneFailure(message: string) {
   const lower = message.toLowerCase();
   if (
@@ -1194,15 +1245,20 @@ async function processCloneJob(payload: CloneJobPayload) {
 }
 
 async function start() {
+  validateRequiredEnv();
+  await verifyWorkerServices();
+
   console.log(
     JSON.stringify({
       service: workerName,
       status: "ready",
-      queues: ["repo.clone"],
+      queues: [QUEUE_NAME],
+      databaseConfigured: true,
+      redis: getSafeUrlLabel(REDIS_URL),
     }),
   );
 
-  const queue = new RedisQueue<CloneJobPayload>("repo.clone", REDIS_URL);
+  const queue = new RedisQueue<CloneJobPayload>(QUEUE_NAME, REDIS_URL);
   await queue.dequeue(processCloneJob);
 }
 
@@ -1211,7 +1267,8 @@ const isMain =
   fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
   start().catch((err) => {
-    console.error("Worker failed to start:", err);
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`Worker failed to start: ${message}`);
     process.exit(1);
   });
 }

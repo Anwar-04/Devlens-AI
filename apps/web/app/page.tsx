@@ -3969,9 +3969,6 @@ function RepoBriefPanel({
         ? buildSeniorRepoExplanation(summary)
         : "";
   const guideDomain = enhancedGuide?.domain ?? summary?.understanding.domain ?? "";
-  const guideArchitecture =
-    enhancedGuide?.architecture ??
-    (summary ? describeRepositoryArchitecture(summary) : "");
   const guideCoreFeatures =
     enhancedGuide?.coreFeatures ?? summary?.understanding.coreFeatures ?? [];
   const guideReadingOrder =
@@ -4057,7 +4054,7 @@ function RepoBriefPanel({
                   <h2 className="mt-1.5 text-xl font-semibold tracking-normal text-ink">
                     {summary.repository.owner}/{summary.repository.name}
                   </h2>
-                  <p className="mt-2 line-clamp-3 max-w-4xl text-sm leading-6 text-graphite">
+                  <p className="mt-2 max-w-5xl text-sm leading-6 text-graphite">
                     {guideSummary}
                   </p>
                 </div>
@@ -4072,79 +4069,16 @@ function RepoBriefPanel({
                 </span>
               </div>
 
-              <div className="mt-4 grid gap-3 xl:grid-cols-[minmax(0,1fr)_300px]">
-                <div className="rounded-md border border-line bg-cloud/30 p-3">
-                  <div className="flex items-start gap-3">
-                    <DevLensIcon
-                      icon={devlensIcons.guide.purpose}
-                      tone="primary"
-                      size={16}
-                      framed
-                    />
-                    <div className="min-w-0">
-                      <p className="text-sm font-semibold text-ink">
-                        What this project does
-                      </p>
-                      <p className="mt-1.5 line-clamp-3 text-sm leading-6 text-graphite">
-                        {enhancedGuide?.mode === "provider" && enhancedGuide.summary
-                          ? enhancedGuide.summary
-                          : getBusinessPurpose(summary)}
-                      </p>
-                    </div>
-                  </div>
-                  <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                    <div className="rounded-md bg-white px-3 py-2 shadow-sm">
-                      <p className="text-[11px] font-semibold uppercase tracking-wide text-graphite">
-                        Domain
-                      </p>
-                      <p className="mt-1 text-sm font-medium leading-5 text-ink">
-                        {guideDomain}
-                      </p>
-                    </div>
-                    <div className="rounded-md bg-white px-3 py-2 shadow-sm">
-                      <p className="text-[11px] font-semibold uppercase tracking-wide text-graphite">
-                        Structure
-                      </p>
-                      <p className="mt-1 line-clamp-2 text-sm font-medium leading-5 text-ink">
-                        {guideArchitecture}
-                      </p>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="rounded-md border border-line bg-cloud/30 p-3">
-                  <div className="flex items-center gap-2">
-                    <DevLensIcon
-                      icon={devlensIcons.guide.readingPath}
-                      tone="primary"
-                      size={15}
-                    />
-                    <p className="text-sm font-semibold text-ink">Start here</p>
-                  </div>
-                  <div className="mt-3 grid gap-2">
-                    {guideReadingOrder.slice(0, 3).map((item, index) => (
-                      <button
-                        key={item.file}
-                        type="button"
-                        onClick={() => onOpenInFiles({ filePath: item.file })}
-                        className="grid min-w-0 grid-cols-[28px_minmax(0,1fr)] gap-2 rounded-md border border-line bg-white px-2 py-2 text-left shadow-sm transition-colors hover:border-signal hover:bg-signal/5"
-                        title={`${item.file} - ${item.reason}`}
-                      >
-                        <span className="grid h-7 w-7 place-items-center rounded bg-signal/10 text-xs font-semibold text-signal">
-                          {index + 1}
-                        </span>
-                        <span className="min-w-0">
-                          <span className="block truncate text-sm font-semibold text-ink">
-                            {item.file}
-                          </span>
-                          <span className="mt-0.5 block line-clamp-1 text-xs leading-4 text-graphite">
-                            {item.reason}
-                          </span>
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
+              <div className="mt-4 flex min-w-0 flex-wrap items-center gap-2 border-t border-line pt-3">
+                <span className="text-[11px] font-semibold uppercase tracking-wide text-graphite">
+                  Domain
+                </span>
+                <span
+                  className="min-w-0 max-w-full break-words rounded-md bg-signal/10 px-2.5 py-1 text-sm font-medium leading-5 text-ink"
+                  title={guideDomain || inferProjectType(summary)}
+                >
+                  {guideDomain || inferProjectType(summary)}
+                </span>
               </div>
 
               {guideReadingOrder.length ? (
@@ -4655,6 +4589,11 @@ export default function Home() {
   const walkthrough = useMemo(
     () => buildWalkthroughSummary(docsSummary, walkthroughState),
     [docsSummary, walkthroughState],
+  );
+  const hasStartedWalkthrough = Boolean(
+    walkthroughState.activeStepPath ||
+      walkthroughState.completedFiles.length ||
+      walkthroughState.skippedFiles.length,
   );
   const walkthroughHandoff = useMemo(
     () =>
@@ -6853,511 +6792,117 @@ export default function Home() {
           ) : null}
         </section>
 
-        <aside className="flex min-h-[520px] min-w-0 flex-col overflow-hidden border-t border-line bg-white/90 p-4 md:h-full md:min-h-0 md:border-l md:border-t-0">
-          <div className="flex min-w-0 items-center justify-between gap-3">
+        <aside className="flex min-h-[520px] min-w-0 flex-col overflow-hidden border-t border-line bg-[#fcfaff] p-3 shadow-[inset_1px_0_0_rgba(226,217,244,0.7)] md:h-full md:min-h-0 md:border-l md:border-t-0">
+          <div className="flex min-w-0 items-center justify-between gap-2">
             <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                <p className="font-semibold">DevLens AI</p>
-                <span className="rounded bg-signal/10 px-1.5 py-0.5 text-[10px] font-semibold text-signal">
+              <div className="flex min-w-0 items-center gap-2">
+                <p className="truncate text-sm font-semibold leading-5">DevLens AI</p>
+                <span className="shrink-0 rounded bg-signal/10 px-1.5 py-0.5 text-[10px] font-semibold text-signal">
                   BETA
                 </span>
               </div>
-              <p className="mt-1 text-sm leading-6 text-graphite">
-                Ask practical questions about this repository.
-              </p>
             </div>
-            <DevLensIcon
-              icon={devlensIcons.product.assistant}
-              tone="primary"
-              size={18}
-            />
-          </div>
-
-          <div className="mt-4">
-            <p className="text-xs font-semibold uppercase tracking-wide text-graphite">
-              Suggested questions
-            </p>
-          </div>
-
-          <div className="mt-2 flex min-w-0 flex-wrap gap-2">
-            {[
-              "Explain this repository",
-              "Where should I start?",
-              "Explain selected file",
-            ].map((prompt) => (
+            <div className="flex shrink-0 items-center gap-1.5">
               <button
-                key={prompt}
                 type="button"
-                onClick={() => handleSuggestedQuestion(prompt)}
-                disabled={isAskingDevlens}
-                className="max-w-full rounded-full border border-line bg-white px-3 py-1.5 text-left text-xs font-medium text-graphite shadow-sm transition-colors hover:border-signal hover:bg-signal/5 hover:text-ink"
+                onClick={startWalkthrough}
+                disabled={isAskingDevlens || !repositoryReady || hasStartedWalkthrough}
+                className="rounded-md bg-gradient-to-r from-signal to-[#5b21b6] px-2.5 py-1 text-[11px] font-semibold text-white shadow-sm hover:from-[#7c3aed] hover:to-[#4c1d95] disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {prompt}
+                {hasStartedWalkthrough ? "Walkthrough on" : "Start walkthrough"}
               </button>
-            ))}
+              <DevLensIcon
+                icon={devlensIcons.product.assistant}
+                tone="primary"
+                size={16}
+                label="DevLens AI"
+              />
+            </div>
           </div>
 
-          <details className="group mt-2 min-w-0 rounded-md border border-line bg-white px-3 py-2">
-            <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-xs font-semibold uppercase tracking-wide text-graphite">
-              <span>More</span>
-              <ChevronDown size={14} className="transition-transform group-open:rotate-180" />
-            </summary>
-            <div className="mt-3 grid gap-3">
-              {[
-                {
-                  label: "Walkthrough",
-                  prompts: [
-                    "Start walkthrough",
-                    "Continue walkthrough",
-                    "Show evidence for this step",
-                    "Summarize walkthrough progress",
-                    "Copy recap",
-                  ],
-                },
-                {
-                  label: "Understand",
-                  prompts: [
-                    "Why am I reading this file?",
-                    "What should I look for here?",
-                    "Summarize this for a teammate",
-                    "What should I inspect next?",
-                  ],
-                },
-                {
-                  label: "Locate",
-                  prompts: [
-                    "What are the most important files?",
-                    "Find authentication",
-                    "Find business logic",
-                  ],
-                },
-              ].map((group) => (
-                <div key={group.label} className="min-w-0">
-                  <p className="text-[11px] font-semibold uppercase tracking-wide text-graphite">
-                    {group.label}
-                  </p>
-                  <div className="mt-1.5 flex min-w-0 flex-wrap gap-1.5">
-                    {group.prompts.map((prompt) => (
-                      <button
-                        key={prompt}
-                        type="button"
-                        onClick={() => handleSuggestedQuestion(prompt)}
-                        disabled={isAskingDevlens}
-                        className="max-w-full rounded-full border border-line bg-white px-2 py-1 text-left text-xs font-medium text-graphite transition-colors hover:border-signal hover:bg-cloud hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        {prompt}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </details>
-
-          <div className="mt-4 min-h-0 min-w-0 flex-1 overflow-y-auto pr-1">
-          {repositoryReady && guidedInvestigation ? (
-            <section className="min-w-0 overflow-hidden rounded-md bg-cloud/35 p-3">
-              <div className="flex min-w-0 items-start justify-between gap-3">
+          <div className="mt-2 min-h-0 min-w-0 flex-1 space-y-4 overflow-y-auto rounded-md border border-line bg-white/60 p-3 pr-2 shadow-sm">
+          {walkthrough && hasStartedWalkthrough ? (
+            <div className="sticky top-0 z-10 min-w-0 rounded-md border border-line bg-white/95 p-2 shadow-sm backdrop-blur">
+              <div className="flex min-w-0 items-center justify-between gap-2">
                 <div className="min-w-0">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-graphite">
-                    Guided investigation
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-graphite">
+                    Walkthrough
                   </p>
-                  <p className="mt-1 break-words text-sm font-semibold leading-5 text-ink">
-                    {guidedInvestigation.status}
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={startWalkthrough}
-                  disabled={isAskingDevlens}
-                  className="shrink-0 rounded-md border border-line bg-white px-2 py-1 text-xs font-medium text-graphite shadow-sm hover:border-signal hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  Start walkthrough
-                </button>
-              </div>
-
-              {walkthrough ? (
-                <div className="mt-3 min-w-0 overflow-hidden rounded-md bg-white p-3 shadow-sm">
-                  <div className="flex min-w-0 items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <p className="text-xs font-semibold uppercase tracking-wide text-graphite">
-                        Walkthrough progress
-                      </p>
-                      <p className="mt-1 truncate text-sm font-semibold leading-5 text-ink" title={walkthrough.current?.path ?? undefined}>
-                        {walkthrough.isComplete
-                          ? "Walkthrough complete"
-                          : walkthrough.current?.path ?? "Choose a starting file"}
-                      </p>
-                    </div>
-                    <span className="shrink-0 rounded bg-cloud px-2 py-1 text-[11px] font-semibold text-graphite">
-                      {walkthrough.progressLabel}
+                  <div className="mt-1 flex min-w-0 flex-wrap gap-x-3 gap-y-1 text-[11px] leading-4 text-graphite">
+                    <button
+                      type="button"
+                      onClick={() => walkthrough.current && openCitationInFiles(walkthrough.current)}
+                      disabled={!walkthrough.current}
+                      className="min-w-0 max-w-full truncate text-left font-semibold text-signal hover:text-ink disabled:cursor-default disabled:text-graphite"
+                      title={walkthrough.current?.path ?? undefined}
+                    >
+                      Current: {walkthrough.current?.path ?? "Choose file"}
+                    </button>
+                    <span className="min-w-0 max-w-full truncate" title={walkthrough.next?.path ?? undefined}>
+                      Next: {walkthrough.next?.path ?? "None"}
                     </span>
                   </div>
-
-                  <div className="mt-3 grid grid-cols-3 gap-2 text-center">
-                    <div className="rounded bg-cloud px-2 py-1.5">
-                      <p className="text-sm font-semibold text-ink">
-                        {walkthrough.completedCount}
-                      </p>
-                      <p className="text-[11px] text-graphite">Done</p>
-                    </div>
-                    <div className="rounded bg-cloud px-2 py-1.5">
-                      <p className="text-sm font-semibold text-ink">
-                        {walkthrough.remainingCount}
-                      </p>
-                      <p className="text-[11px] text-graphite">Left</p>
-                    </div>
-                    <div className="rounded bg-cloud px-2 py-1.5">
-                      <p className="text-sm font-semibold text-ink">
-                        {walkthrough.skippedCount}
-                      </p>
-                      <p className="text-[11px] text-graphite">Skipped</p>
-                    </div>
-                  </div>
-
-                  {walkthrough.current ? (
-                    <button
-                      type="button"
-                      onClick={() => openCitationInFiles(walkthrough.current!)}
-                      className="mt-3 block max-w-full truncate text-left text-xs font-semibold text-signal hover:text-ink"
-                      title={`${walkthrough.current.path} - ${walkthrough.current.reason}`}
-                    >
-                      Open current: {walkthrough.current.path}
-                    </button>
-                  ) : null}
-                  <p className="mt-2 line-clamp-2 text-xs leading-5 text-graphite">
-                    {walkthrough.isComplete
-                      ? "Review the completion summary, then choose the next deep dive from the cited files."
-                      : walkthrough.current?.reason ?? "Start the walkthrough from the Repository Guide reading order."}
-                  </p>
-                  <p className="mt-1 truncate text-[11px] text-graphite" title={walkthrough.next?.path ?? undefined}>
-                    Next: {walkthrough.next?.path ?? "No remaining file"}
-                  </p>
-
-                  <div className="mt-3 flex flex-wrap gap-1.5">
-                    <button
-                      type="button"
-                      onClick={walkthrough.completedCount || walkthrough.skippedCount ? continueWalkthrough : startWalkthrough}
-                      disabled={isAskingDevlens || walkthrough.isComplete}
-                      className="rounded-md bg-signal px-2 py-1 text-xs font-semibold text-white hover:bg-[#5b21b6] disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      {walkthrough.completedCount || walkthrough.skippedCount
-                        ? "Continue"
-                        : "Start"}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={markWalkthroughFileDone}
-                      disabled={isAskingDevlens || walkthrough.isComplete || !walkthrough.current}
-                      className="rounded-md border border-line bg-white px-2 py-1 text-xs font-medium text-graphite hover:border-signal hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      Mark done
-                    </button>
-                    <button
-                      type="button"
-                      onClick={skipWalkthroughFile}
-                      disabled={isAskingDevlens || walkthrough.isComplete || !walkthrough.current}
-                      className="rounded-md border border-line bg-white px-2 py-1 text-xs font-medium text-graphite hover:border-signal hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      Skip
-                    </button>
+                </div>
+                <span className="shrink-0 rounded bg-cloud px-2 py-1 text-[11px] font-semibold text-graphite">
+                  {walkthrough.progressLabel}
+                </span>
+              </div>
+              <div className="mt-2 flex min-w-0 flex-wrap items-center gap-1.5 text-[11px]">
+                <span className="rounded bg-cloud px-2 py-1 font-semibold text-ink">
+                  {walkthrough.completedCount} done
+                </span>
+                <span className="rounded bg-cloud px-2 py-1 font-semibold text-ink">
+                  {walkthrough.remainingCount} left
+                </span>
+                <span className="rounded bg-cloud px-2 py-1 font-semibold text-ink">
+                  {walkthrough.skippedCount} skipped
+                </span>
+                <button
+                  type="button"
+                  onClick={markWalkthroughFileDone}
+                  disabled={isAskingDevlens || walkthrough.isComplete || !walkthrough.current}
+                  className="rounded border border-line bg-white px-2 py-1 font-medium text-graphite hover:border-signal hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Done
+                </button>
+                <button
+                  type="button"
+                  onClick={skipWalkthroughFile}
+                  disabled={isAskingDevlens || walkthrough.isComplete || !walkthrough.current}
+                  className="rounded border border-line bg-white px-2 py-1 font-medium text-graphite hover:border-signal hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Skip
+                </button>
+                <details className="group relative">
+                  <summary className="inline-flex cursor-pointer list-none items-center gap-1 rounded border border-line bg-white px-2 py-1 font-medium text-graphite hover:border-signal hover:text-ink">
+                    <span>Actions</span>
+                    <ChevronDown size={11} className="transition-transform group-open:rotate-180" />
+                  </summary>
+                  <div className="absolute right-0 top-full z-20 mt-1 grid min-w-[128px] gap-1 rounded-md border border-line bg-white p-1 shadow-lg">
                     <button
                       type="button"
                       onClick={() => void askDevlens("Summarize walkthrough progress")}
                       disabled={isAskingDevlens}
-                      className="rounded-md border border-line bg-white px-2 py-1 text-xs font-medium text-graphite hover:border-signal hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+                      className="rounded px-2 py-1 text-left font-medium text-graphite hover:bg-cloud hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       Summary
                     </button>
                     <button
                       type="button"
-                      onClick={finishWalkthrough}
-                      disabled={isAskingDevlens || !walkthrough}
-                      className="rounded-md border border-line bg-white px-2 py-1 text-xs font-medium text-graphite hover:border-signal hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      Finish
-                    </button>
-                    <button
-                      type="button"
                       onClick={() => void copyRepositoryRecap()}
                       disabled={!walkthroughHandoff || !docsSummary}
-                      className="rounded-md border border-line bg-white px-2 py-1 text-xs font-medium text-graphite hover:border-signal hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+                      className="rounded px-2 py-1 text-left font-medium text-graphite hover:bg-cloud hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       {recapCopyState === "copied" ? "Copied" : "Copy recap"}
                     </button>
                   </div>
-
-                  {walkthrough.risks.length ? (
-                    <p className="mt-2 line-clamp-2 text-[11px] leading-4 text-graphite">
-                      Watch: {walkthrough.risks[0]}
-                    </p>
-                  ) : null}
-                </div>
-              ) : null}
-
-              {walkthrough?.isComplete && walkthroughHandoff ? (
-                <div className="mt-3 min-w-0 overflow-hidden rounded-md border border-mint/20 bg-white p-3">
-                  <div className="flex min-w-0 items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <p className="text-xs font-semibold uppercase tracking-wide text-mint">
-                        Onboarding handoff
-                      </p>
-                      <p className="mt-1 line-clamp-2 text-sm font-semibold leading-5 text-ink">
-                        {walkthroughHandoff.projectSummary}
-                      </p>
-                    </div>
-                    <div className="flex shrink-0 items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => void copyRepositoryRecap()}
-                        className="rounded-md border border-line bg-white px-2 py-1 text-xs font-medium text-graphite hover:border-signal hover:text-ink"
-                      >
-                        {recapCopyState === "copied" ? "Copied" : "Copy recap"}
-                      </button>
-                      <DevLensIcon
-                        icon={devlensIcons.status.success}
-                        tone="success"
-                        size={16}
-                      />
-                    </div>
-                  </div>
-
-                  <div className="mt-3 grid gap-2">
-                    <div>
-                      <p className="text-[11px] font-semibold uppercase tracking-wide text-graphite">
-                        Inspected
-                      </p>
-                      <div className="mt-1 flex flex-wrap gap-1">
-                        {walkthroughHandoff.inspected.length ? (
-                          walkthroughHandoff.inspected.slice(0, 4).map((citation) => (
-                            <button
-                              key={`${citation.path}-${citation.startLine ?? "file"}`}
-                              type="button"
-                              onClick={() => openCitationInFiles(citation)}
-                              className="max-w-full min-w-0 truncate rounded bg-cloud px-2 py-1 text-[11px] font-medium text-graphite hover:text-signal"
-                              title={`${citation.path} - ${citation.reason}`}
-                            >
-                              {citation.path}
-                            </button>
-                          ))
-                        ) : (
-                          <span className="text-xs text-graphite">
-                            No files marked done yet
-                          </span>
-                        )}
-                      </div>
-                    </div>
-
-                    {walkthroughHandoff.skipped.length ? (
-                      <div>
-                        <p className="text-[11px] font-semibold uppercase tracking-wide text-graphite">
-                          Skipped
-                        </p>
-                        <div className="mt-1 flex flex-wrap gap-1">
-                          {walkthroughHandoff.skipped.slice(0, 3).map((citation) => (
-                            <button
-                              key={`${citation.path}-${citation.startLine ?? "file"}`}
-                              type="button"
-                              onClick={() => openCitationInFiles(citation)}
-                              className="max-w-full min-w-0 truncate rounded bg-amber/10 px-2 py-1 text-[11px] font-medium text-amber hover:text-ink"
-                              title={`${citation.path} - ${citation.reason}`}
-                            >
-                              {citation.path}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    ) : null}
-
-                    <div>
-                      <p className="text-[11px] font-semibold uppercase tracking-wide text-graphite">
-                        Still unknown
-                      </p>
-                      <p className="mt-1 line-clamp-2 text-xs leading-5 text-graphite">
-                        {walkthroughHandoff.risks[0] ??
-                          "No major walkthrough risks are currently flagged."}
-                      </p>
-                    </div>
-
-                    {walkthroughHandoff.nextDeepDive ? (
-                      <button
-                        type="button"
-                        onClick={() => openCitationInFiles(walkthroughHandoff.nextDeepDive!)}
-                        className="min-w-0 rounded-md border border-line bg-cloud px-2 py-1.5 text-left text-xs hover:border-signal hover:bg-white"
-                        title={walkthroughHandoff.nextDeepDiveReason}
-                      >
-                        <span className="block font-semibold text-ink">
-                          Next deep dive
-                        </span>
-                        <span className="mt-0.5 block truncate text-graphite" title={walkthroughHandoff.nextDeepDive.path}>
-                          {walkthroughHandoff.nextDeepDive.path}
-                        </span>
-                      </button>
-                    ) : null}
-                  </div>
-                </div>
-              ) : null}
-
-              {guidedInvestigation.bestNextFile ? (
-                <div className="mt-3 min-w-0 overflow-hidden rounded-md bg-white p-3 shadow-sm">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-graphite">
-                    Best next file
-                  </p>
-                  <button
-                    type="button"
-                    onClick={() => openCitationInFiles(guidedInvestigation.bestNextFile!)}
-                    className="mt-1 block max-w-full truncate text-left text-sm font-semibold text-ink hover:text-signal"
-                    title={guidedInvestigation.bestNextFile.path}
-                  >
-                    {guidedInvestigation.bestNextFile.path}
-                  </button>
-                  <p className="mt-2 line-clamp-3 break-words text-xs leading-5 text-graphite">
-                    {guidedInvestigation.whyItMatters}
-                  </p>
-                  <button
-                    type="button"
-                    onClick={() => openCitationInFiles(guidedInvestigation.bestNextFile!)}
-                    className="mt-3 inline-flex items-center gap-1.5 rounded-md bg-signal px-2 py-1 text-xs font-semibold text-white hover:bg-[#5b21b6]"
-                  >
-                    <DevLensIcon icon={devlensIcons.product.citations} size={12} />
-                    Open evidence
-                  </button>
-                </div>
-              ) : null}
-
-              <div className="mt-3 grid gap-3">
-                <div className="min-w-0">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-graphite">
-                    Important findings
-                  </p>
-                  <ul className="mt-2 grid gap-1.5 text-xs leading-5 text-graphite">
-                    {guidedInvestigation.findings.map((finding) => (
-                      <li key={finding} className="flex min-w-0 gap-2">
-                        <DevLensIcon
-                          icon={devlensIcons.status.success}
-                          tone="success"
-                          size={13}
-                          className="mt-0.5"
-                        />
-                        <span className="min-w-0 line-clamp-2 break-words">{finding}</span>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-
-                {guidedInvestigation.connections.length ? (
-                  <div className="min-w-0">
-                    <p className="text-xs font-semibold uppercase tracking-wide text-graphite">
-                      Connects to
-                    </p>
-                    <div className="mt-2 flex min-w-0 flex-wrap gap-1.5">
-                      {guidedInvestigation.connections.map((connection) => (
-                        <span
-                          key={connection}
-                          className="inline-block max-w-full min-w-0 truncate rounded bg-white px-2 py-1 text-xs font-medium text-graphite"
-                          title={connection}
-                        >
-                          {connection}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                ) : null}
-
-                {guidedInvestigation.inspectAfter.length ? (
-                  <div className="min-w-0">
-                    <p className="text-xs font-semibold uppercase tracking-wide text-graphite">
-                      Inspect after this
-                    </p>
-                    <div className="mt-2 grid min-w-0 gap-1.5">
-                      {guidedInvestigation.inspectAfter.map((citation) => (
-                        <button
-                          key={`${citation.path}-${citation.startLine ?? "file"}`}
-                          type="button"
-                          onClick={() => openCitationInFiles(citation)}
-                          className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-2 rounded bg-white px-2 py-1.5 text-left text-xs text-graphite hover:bg-signal/10 hover:text-ink"
-                          title={`${citation.path} - ${citation.reason}`}
-                        >
-                          <span className="min-w-0 truncate font-medium">
-                            {citation.path}
-                          </span>
-                          {citation.startLine && citation.endLine ? (
-                            <span className="shrink-0 text-[11px]">
-                              {formatCompactLineRange({
-                                startLine: citation.startLine,
-                                endLine: citation.endLine,
-                              })}
-                            </span>
-                          ) : null}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                ) : null}
-
-                {guidedInvestigation.risks.length ? (
-                  <div className="min-w-0">
-                    <p className="text-xs font-semibold uppercase tracking-wide text-graphite">
-                      Risk signals
-                    </p>
-                    <ul className="mt-2 grid gap-1.5 text-xs leading-5 text-graphite">
-                      {guidedInvestigation.risks.map((risk) => (
-                        <li key={risk} className="flex min-w-0 gap-2">
-                          <DevLensIcon
-                            icon={devlensIcons.status.warning}
-                            tone="warning"
-                            size={13}
-                            className="mt-0.5"
-                          />
-                          <span className="min-w-0 line-clamp-2 break-words">{risk}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                ) : null}
+                </details>
               </div>
-
-              <div className="mt-3 min-w-0 border-t border-line pt-3">
-                <p className="text-xs font-semibold uppercase tracking-wide text-graphite">
-                  Suggested follow-ups
-                </p>
-                <div className="mt-2 flex min-w-0 flex-wrap gap-1.5">
-                  {guidedInvestigation.followUps.map((followUp) => (
-                    <button
-                      key={followUp}
-                      type="button"
-                      onClick={() => void askDevlens(followUp)}
-                      disabled={isAskingDevlens}
-                      className="max-w-full rounded-full border border-line bg-white px-2 py-1 text-xs text-graphite hover:border-signal hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      {followUp}
-                    </button>
-                  ))}
-                </div>
-                <p className="mt-2 break-words text-xs leading-5 text-graphite">
-                  {guidedInvestigation.summary}
-                </p>
-                {inspectedFilePaths.length ? (
-                  <div className="mt-2 flex min-w-0 flex-wrap gap-1">
-                    {inspectedFilePaths.slice(0, 4).map((path) => (
-                      <button
-                        key={path}
-                        type="button"
-                        onClick={() => openPathInFiles(path)}
-                        className="max-w-full min-w-0 truncate rounded bg-white px-2 py-1 text-[11px] font-medium text-graphite hover:text-signal"
-                        title={path}
-                      >
-                        {path}
-                      </button>
-                    ))}
-                  </div>
-                ) : null}
-              </div>
-            </section>
+            </div>
           ) : null}
-
-          <div className="mt-4 min-w-0 rounded-md bg-cloud/35 p-3">
-            <div className="ml-auto max-w-[88%] break-words rounded-md bg-gradient-to-r from-[#1f1635] to-[#312052] px-3 py-2 text-sm leading-6 text-white">
+          {devlensResponse || isAskingDevlens ? (
+          <div className="min-w-0">
+            <div className="ml-auto max-w-[88%] break-words rounded-md bg-gradient-to-r from-[#1f1635] to-[#3b1f67] px-3 py-2 text-sm font-medium leading-6 text-white shadow-sm">
               {devlensPrompt}
             </div>
             <div className="mt-3 flex min-w-0 items-start gap-3">
@@ -7368,7 +6913,17 @@ export default function Home() {
                 framed
                 label="DevLens assistant"
               />
-              <div className="min-w-0 max-w-full overflow-hidden rounded-md bg-white p-3 shadow-sm">
+              <div className="min-w-0 max-w-full overflow-hidden rounded-md border border-line bg-white p-3 shadow-sm">
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-graphite">
+                    Answer
+                  </p>
+                  {devlensResponse?.mode === "provider" ? (
+                    <span className="rounded bg-signal/10 px-2 py-0.5 text-[11px] font-semibold text-signal">
+                      Enhanced
+                    </span>
+                  ) : null}
+                </div>
                 <p className="break-words text-sm leading-6 text-graphite">
                   {isAskingDevlens ? (
                     <span className="inline-flex items-center gap-2">
@@ -7378,32 +6933,34 @@ export default function Home() {
                         size={14}
                         className="animate-spin"
                       />
-                      Gathering file-backed context
+                      Gathering repository context
                     </span>
                   ) : (
-                    devlensResponse?.answer ??
-                    (repositoryReady
-                      ? "Choose a question above. DevLens will use the Repository Guide, file tree, and code details already available in this workspace."
-                      : "Analyze a repository first, then DevLens can guide you through where to start and what to inspect.")
+                    devlensResponse?.answer
                   )}
                 </p>
                 {getAssistantStatusLabel(devlensResponse) ? (
-                  <p className="mt-2 rounded bg-cloud px-2 py-1 text-xs leading-5 text-graphite">
+                  <p className="mt-3 rounded-md border border-line bg-cloud px-2 py-1.5 text-xs leading-5 text-graphite">
                     {getAssistantStatusLabel(devlensResponse)}
                   </p>
                 ) : null}
                 {devlensResponse?.citations.length ? (
                   <div className="mt-3 border-t border-line pt-3">
-                    <p className="text-xs font-semibold uppercase tracking-wide text-graphite">
-                      Citations
-                    </p>
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-graphite">
+                        Sources
+                      </p>
+                      <span className="text-[11px] font-medium text-graphite">
+                        {devlensResponse.citations.length} cited
+                      </span>
+                    </div>
                     <div className="mt-2 grid min-w-0 gap-1.5">
                       {devlensResponse.citations.map((source) => (
                         <button
                           key={`${source.path}-${source.startLine ?? "file"}`}
                           type="button"
                           onClick={() => openCitationInFiles(source)}
-                          className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-2 rounded bg-cloud px-2 py-1.5 text-left text-xs font-medium text-graphite transition-colors hover:bg-signal/10 hover:text-ink"
+                          className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-2 rounded-md border border-line bg-cloud px-2 py-1.5 text-left text-xs font-medium text-graphite transition-colors hover:border-signal hover:bg-signal/10 hover:text-ink"
                           title={`${source.path} - ${source.reason}`}
                         >
                           <DevLensIcon
@@ -7431,33 +6988,61 @@ export default function Home() {
                     </div>
                   </div>
                 ) : null}
+              </div>
+            </div>
+          </div>
+          ) : (
+          <div className="min-w-0 rounded-md border border-line bg-white p-3 shadow-sm">
+            <div className="flex min-w-0 items-start gap-3">
+              <DevLensIcon
+                icon={devlensIcons.product.assistant}
+                tone="primary"
+                size={14}
+                framed
+                label="DevLens assistant"
+              />
+              <div className="min-w-0">
+                <p className="text-xs font-semibold uppercase tracking-wide text-graphite">
+                  Ask DevLens
+                </p>
+                <p className="mt-1 text-sm leading-6 text-graphite">
+                  {repositoryReady
+                    ? "Choose a starting question or ask your own. Answers stay tied to repository files and source lines."
+                    : "Analyze a repository first, then DevLens can guide where to start and what to inspect."}
+                </p>
                 <div className="mt-3 flex min-w-0 flex-wrap gap-1.5">
-                  {["Explain selected file", "Search important files"].map((followUp) => (
+                  {[
+                    "Explain this repository",
+                    "Where should I start?",
+                    "Explain selected file",
+                  ].map((prompt) => (
                     <button
-                      key={followUp}
+                      key={prompt}
                       type="button"
-                      onClick={() => void askDevlens(followUp)}
-                      disabled={isAskingDevlens}
-                      className="max-w-full rounded-full border border-line px-2 py-1 text-xs text-graphite hover:border-signal hover:text-ink"
+                      onClick={() => handleSuggestedQuestion(prompt)}
+                      disabled={isAskingDevlens || !repositoryReady}
+                      className="max-w-full rounded-full border border-line bg-white px-2.5 py-1 text-left text-[11px] font-semibold text-graphite shadow-sm transition-colors hover:border-signal hover:bg-signal/5 hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+                      title={prompt}
                     >
-                      {followUp}
+                      {prompt}
                     </button>
                   ))}
                 </div>
               </div>
             </div>
           </div>
+          )}
           </div>
 
           <div className="mt-auto min-w-0 shrink-0 bg-white/90 pt-4">
-            <div className="min-w-0 rounded-md border border-line bg-white px-3 py-2 shadow-sm">
+            <div className="min-w-0 rounded-md border border-line bg-white px-3 py-2 shadow-[0_14px_34px_rgba(31,22,53,0.08)]">
               <textarea
                 value={devlensPrompt}
                 onChange={(event) => setDevlensPrompt(event.target.value)}
                 rows={3}
                 placeholder={
                   repositoryReady
-                    ? "Ask anything about this repository..."
+                    ? "Ask about files, architecture, auth, routes..."
                     : "Analyze a repository to enable DevLens AI."
                 }
                 className="w-full resize-none break-words bg-transparent text-sm outline-none placeholder:text-graphite"
@@ -7470,7 +7055,7 @@ export default function Home() {
                   type="button"
                   onClick={() => void askDevlens(devlensPrompt)}
                   disabled={!devlensPrompt.trim() || isAskingDevlens}
-                  className="inline-flex items-center gap-1.5 rounded-md bg-signal px-3 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-[#5b21b6] disabled:cursor-not-allowed disabled:opacity-50"
+                  className="inline-flex items-center gap-1.5 rounded-md bg-gradient-to-r from-signal to-[#5b21b6] px-3 py-1.5 text-xs font-semibold text-white shadow-sm hover:from-[#6d28d9] hover:to-[#4c1d95] disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {isAskingDevlens ? (
                     <>
