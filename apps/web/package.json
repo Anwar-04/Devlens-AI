@@ -6,6 +6,7 @@
     "dev": "next dev --port 3000",
     "build": "next build",
     "start": "next start --port 3000",
+    "start:prod": "next start --hostname :: --port ${PORT:-3000}",
     "lint": "next lint",
     "typecheck": "tsc --noEmit"
   },
@@ -32,4 +33,3 @@
     "typescript": "^5.7.2"
   }
 }
-
