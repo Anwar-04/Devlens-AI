@@ -95,6 +95,29 @@ type FileSourceResponse = {
   };
 };
 
+type RepositoryResponse = {
+  id: string;
+  owner: string;
+  name: string;
+  url: string;
+  cloneStatus: string;
+  analysisStatus: string;
+  detectedLanguages: string[];
+  detectedFrameworks: string[];
+  fileCount: number;
+  totalSizeBytes: number;
+  jobs?: Array<{
+    id: string;
+    status: JobStatus;
+    currentStep: string;
+    progress: number;
+    errorMessage?: string | null;
+    startedAt?: string | null;
+    finishedAt?: string | null;
+    createdAt?: string;
+  }>;
+};
+
 type SearchResult = {
   id: string;
   score: number;
@@ -381,6 +404,8 @@ type SymbolRelationshipTab = "calls" | "references" | "referencedBy";
 type WorkspaceTab = "brief" | "files" | "search";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
+const DEMO_REPOSITORY_ID =
+  process.env.NEXT_PUBLIC_DEMO_REPOSITORY_ID?.trim() ?? "";
 const LARGE_REPO_FILE_CAP = 1200;
 
 const pipelineSteps = [
@@ -4408,7 +4433,10 @@ export default function Home() {
   const [job, setJob] = useState<JobResponse | null>(null);
   const [tree, setTree] = useState<TreeResponse | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isLoadingDemoRepository, setIsLoadingDemoRepository] = useState(false);
+  const [isDemoRepositoryLoaded, setIsDemoRepositoryLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const demoLoadAttempted = useRef(false);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [selectedNode, setSelectedNode] = useState<ExplorerNode | null>(null);
   const [selectedFileSource, setSelectedFileSource] =
@@ -4621,6 +4649,80 @@ export default function Home() {
       setSelectedNode(null);
     }
   }, [explorerTree]);
+
+  useEffect(() => {
+    if (!DEMO_REPOSITORY_ID || demoLoadAttempted.current) return;
+    demoLoadAttempted.current = true;
+
+    let cancelled = false;
+
+    async function loadDemoRepository() {
+      setIsLoadingDemoRepository(true);
+      setError(null);
+
+      try {
+        const response = await fetch(
+          `${API_URL}/repositories/${DEMO_REPOSITORY_ID}`,
+        );
+        if (!response.ok) {
+          const body = await response.json().catch(() => null);
+          throw new Error(body?.message ?? "Unable to load demo repository.");
+        }
+
+        const repositoryResponse =
+          (await response.json()) as RepositoryResponse;
+        const latestJob = repositoryResponse.jobs?.[0];
+        const completedJob: JobResponse = {
+          id: latestJob?.id ?? `demo-${repositoryResponse.id}`,
+          repositoryId: repositoryResponse.id,
+          status: "COMPLETED",
+          currentStep: "completed",
+          progress: 100,
+          errorMessage: null,
+          startedAt: latestJob?.startedAt ?? null,
+          finishedAt: latestJob?.finishedAt ?? null,
+          createdAt: latestJob?.createdAt,
+          repository: {
+            id: repositoryResponse.id,
+            owner: repositoryResponse.owner,
+            name: repositoryResponse.name,
+            url: repositoryResponse.url,
+            cloneStatus: repositoryResponse.cloneStatus,
+            analysisStatus: repositoryResponse.analysisStatus,
+            detectedLanguages: repositoryResponse.detectedLanguages,
+            detectedFrameworks: repositoryResponse.detectedFrameworks,
+            fileCount: repositoryResponse.fileCount,
+            totalSizeBytes: repositoryResponse.totalSizeBytes,
+          },
+        };
+
+        if (cancelled) return;
+
+        setRepoUrl(repositoryResponse.url);
+        setJob(completedJob);
+        setIsDemoRepositoryLoaded(true);
+        await loadRepositoryArtifacts(repositoryResponse.id);
+      } catch (err) {
+        if (!cancelled) {
+          setIsDemoRepositoryLoaded(false);
+          setError(
+            getActionableErrorMessage(
+              err,
+              "Unable to load the preloaded demo repository.",
+            ),
+          );
+        }
+      } finally {
+        if (!cancelled) setIsLoadingDemoRepository(false);
+      }
+    }
+
+    void loadDemoRepository();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (
@@ -4931,6 +5033,18 @@ export default function Home() {
   }
 
   async function analyzeRepository() {
+    const demoSnapshot =
+      isDemoRepositoryLoaded && job
+        ? {
+            job,
+            tree,
+            docsSummary,
+            enhancedGuide,
+            guideEnhanceStatus,
+            symbolsResponse,
+          }
+        : null;
+
     setError(null);
     setTree(null);
     setSelectedNode(null);
@@ -4946,6 +5060,7 @@ export default function Home() {
     setFileSourceError(null);
     setIsLoadingFileSource(false);
     setSymbolsResponse(null);
+    setIsDemoRepositoryLoaded(false);
     setSelectedSymbolId(null);
     setSelectedSymbolDetail(null);
     setSymbolsError(null);
@@ -4986,7 +5101,19 @@ export default function Home() {
       );
       setJob((await jobResponse.json()) as JobResponse);
     } catch (err) {
-      setError(getActionableErrorMessage(err, "Unable to start repository analysis."));
+      if (demoSnapshot) {
+        setJob(demoSnapshot.job);
+        setTree(demoSnapshot.tree);
+        setDocsSummary(demoSnapshot.docsSummary);
+        setEnhancedGuide(demoSnapshot.enhancedGuide);
+        setGuideEnhanceStatus(demoSnapshot.guideEnhanceStatus);
+        setSymbolsResponse(demoSnapshot.symbolsResponse);
+        setIsDemoRepositoryLoaded(true);
+      }
+      const fallbackMessage = demoSnapshot
+        ? "Unable to start live repository analysis. The preloaded demo remains available."
+        : "Unable to start repository analysis.";
+      setError(getActionableErrorMessage(err, fallbackMessage));
     } finally {
       setIsSubmitting(false);
     }
@@ -5862,7 +5989,10 @@ export default function Home() {
 
   const activeStepIndex = getStepIndex(job?.currentStep);
   const isRunning =
-    job?.status === "QUEUED" || job?.status === "RUNNING" || isSubmitting;
+    job?.status === "QUEUED" ||
+    job?.status === "RUNNING" ||
+    isSubmitting ||
+    isLoadingDemoRepository;
   const largeRepoModeLikely =
     job?.status === "COMPLETED" &&
     (repository?.fileCount ?? tree?.fileCount ?? 0) >= LARGE_REPO_FILE_CAP;
@@ -6162,6 +6292,27 @@ export default function Home() {
                 Analyze repo
               </button>
             </div>
+            {isDemoRepositoryLoaded || isLoadingDemoRepository ? (
+              <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+                <span className="inline-flex items-center gap-1 rounded bg-signal/10 px-2 py-1 font-semibold text-signal">
+                  {isLoadingDemoRepository ? (
+                    <DevLensIcon
+                      icon={devlensIcons.status.loading}
+                      size={12}
+                      className="animate-spin"
+                    />
+                  ) : (
+                    <DevLensIcon icon={devlensIcons.status.success} size={12} />
+                  )}
+                  {isLoadingDemoRepository
+                    ? "Loading preloaded demo"
+                    : "Preloaded demo"}
+                </span>
+                <span className="text-graphite">
+                  Live analysis still works when the worker is available.
+                </span>
+              </div>
+            ) : null}
             {error ? (
               <div className="mt-3 flex items-start gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm leading-6 text-red-700">
                 <DevLensIcon
